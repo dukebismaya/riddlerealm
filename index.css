@@ -1,0 +1,174 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Footer developer signature animation */
+.developer-mark {
+  position: relative;
+  display: inline-flex;
+  gap: 0.08rem;
+  cursor: pointer;
+  font-weight: 600;
+  color: #38bdf8;
+  transition: color 0.35s ease, text-shadow 0.35s ease;
+}
+
+.developer-mark:hover {
+  color: #67e8f9;
+  text-shadow: 0 0 14px rgba(103, 232, 249, 0.65);
+}
+
+.developer-letter {
+  position: relative;
+  display: inline-block;
+  will-change: transform;
+  transition: transform 0.45s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.developer-letter-inner {
+  display: inline-block;
+  will-change: transform;
+}
+
+.developer-mark:hover .developer-letter-inner {
+  animation: developer-jitter 0.22s infinite alternate;
+}
+
+@keyframes developer-jitter {
+  from {
+    transform: translate3d(-1px, 0, 0);
+  }
+  to {
+    transform: translate3d(1px, 0, 0);
+  }
+}
+
+.developer-mark:hover .developer-letter:nth-child(1) {
+  transform: translate3d(-6px, -10px, 0) rotate(-12deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(2) {
+  transform: translate3d(-3px, -6px, 0) rotate(-6deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(3) {
+  transform: translate3d(4px, -8px, 0) rotate(8deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(4) {
+  transform: translate3d(-5px, 6px, 0) rotate(-14deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(5) {
+  transform: translate3d(6px, 8px, 0) rotate(10deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(6) {
+  transform: translate3d(-4px, -5px, 0) rotate(-8deg);
+}
+
+.developer-mark:hover .developer-letter:nth-child(7) {
+  transform: translate3d(5px, -4px, 0) rotate(12deg);
+}
+
+/* Auth heartbeat backdrop */
+.auth-heartbeat-backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.35;
+  transition: opacity 0.35s ease, filter 0.35s ease;
+  mix-blend-mode: screen;
+  z-index: 0;
+}
+
+.auth-heartbeat-backdrop.active {
+  opacity: 0.65;
+}
+
+.auth-heartbeat-backdrop.flat {
+  opacity: 0.55;
+  filter: hue-rotate(-20deg) saturate(1.4);
+}
+
+.auth-heartbeat-canvas {
+  width: 120%;
+  max-width: 960px;
+  height: 40vh;
+  min-height: 160px;
+  position: relative;
+  filter: drop-shadow(0 0 12px rgba(34, 211, 238, 0.45));
+}
+
+.auth-heartbeat-trace {
+  fill: none;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  stroke-width: 3;
+  stroke-dasharray: 420;
+  stroke-dashoffset: 420;
+  opacity: 0;
+}
+
+.auth-heartbeat-backdrop.active .auth-heartbeat-trace--active {
+  opacity: 0.9;
+  stroke: #22d3ee;
+  animation: heartbeat-travel 1.7s linear infinite;
+}
+
+.auth-heartbeat-backdrop.idle .auth-heartbeat-trace--active {
+  opacity: 0.5;
+  stroke: #38bdf8;
+  animation: heartbeat-travel 3.1s linear infinite;
+}
+
+.auth-heartbeat-backdrop.flat .auth-heartbeat-trace--flat {
+  opacity: 0.85;
+  stroke: #ef4444;
+  stroke-dasharray: 200;
+  stroke-dashoffset: 200;
+  animation: flatline-travel 2.4s linear infinite;
+}
+
+.auth-heartbeat-backdrop.flat .auth-heartbeat-trace--active {
+  opacity: 0;
+  animation: none;
+}
+
+.auth-heartbeat-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(circle at 50% 50%, rgba(34, 211, 238, 0.25), rgba(14, 116, 144, 0));
+  filter: blur(40px);
+  transform: scale(1.1);
+  transition: background 0.4s ease;
+}
+
+.auth-heartbeat-backdrop.flat .auth-heartbeat-glow {
+  background: radial-gradient(circle at 50% 50%, rgba(248, 113, 113, 0.3), rgba(127, 29, 29, 0));
+}
+
+@keyframes heartbeat-travel {
+  0% {
+    stroke-dashoffset: 420;
+  }
+  50% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -420;
+  }
+}
+
+@keyframes flatline-travel {
+  0% {
+    stroke-dashoffset: 200;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}

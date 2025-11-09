@@ -34,6 +34,7 @@ export const deleteUserData = async (userId: string): Promise<void> => {
   await Promise.all([
     deleteDocumentsWhere('dailyProgress', 'userId', userId),
     deleteDocumentsWhere('submissions', 'createdBy', userId),
+    deleteDoc(doc(db, 'otpChallenges', userId)),
   ]);
 
   await deleteDoc(doc(db, 'users', userId));

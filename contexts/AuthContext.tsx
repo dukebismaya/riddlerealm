@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   GoogleAuthProvider,
   User as FirebaseUser,
@@ -27,6 +27,7 @@ import { FirebaseError } from 'firebase/app';
 import { auth, db } from '../services/firebaseClient';
 import { deleteUserData } from '../services/accountDeletion';
 import { User } from '../types';
+import { createOtpChallenge, verifyOtpCode, OtpError } from '../services/otpService';
 
 type AuthRole = 'player' | 'admin';
 
@@ -40,6 +41,14 @@ type AuthContextValue = {
   sendPasswordReset: (email: string) => Promise<void>;
   deleteAccount: (options?: { password?: string }) => Promise<void>;
   signOutUser: () => Promise<void>;
+  otpRequired: boolean;
+  otpDeliveryPending: boolean;
+  otpVerifying: boolean;
+  otpError: string | null;
+  otpTargetEmail: string | null;
+  otpResendCooldownMs: number;
+  verifyOtp: (code: string) => Promise<void>;
+  resendOtp: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -48,6 +57,9 @@ const ADMIN_EMAILS = (import.meta.env.VITE_FIREBASE_ADMIN_EMAILS || '')
   .split(',')
   .map((entry: string) => entry.trim().toLowerCase())
   .filter(Boolean);
+
+const RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_CODE_LENGTH = 6;
 
 const resolveRole = (email: string | null | undefined): AuthRole => {
   if (!email) {
@@ -122,6 +134,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [otpRequired, setOtpRequired] = useState(false);
+  const [otpDeliveryPending, setOtpDeliveryPending] = useState(false);
+  const [otpVerifying, setOtpVerifying] = useState(false);
+  const [otpError, setOtpError] = useState<string | null>(null);
+  const [otpTargetEmail, setOtpTargetEmail] = useState<string | null>(null);
+  const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number>(0);
+  const [otpTimerTick, setOtpTimerTick] = useState(() => Date.now());
+  const otpInitializedForRef = useRef<string | null>(null);
+
+  const prepareOtpForUser = useCallback(async (user: FirebaseUser) => {
+    if (!user.email) {
+      setOtpError('Cannot send a verification code because no email is associated with this account.');
+      setOtpRequired(false);
+      return;
+    }
+
+    setOtpTargetEmail(user.email);
+    setOtpDeliveryPending(true);
+    setOtpRequired(true);
+    setOtpError(null);
+
+    try {
+      await createOtpChallenge(user.uid, user.email);
+      otpInitializedForRef.current = user.uid;
+      setOtpResendAvailableAt(Date.now() + RESEND_COOLDOWN_MS);
+    } catch (error) {
+      if (error instanceof OtpError) {
+        setOtpError(error.message);
+      } else {
+        setOtpError('Failed to send the verification code. Please try again.');
+      }
+      throw error;
+    } finally {
+      setOtpDeliveryPending(false);
+    }
+  }, []);
+
+  const otpResendCooldownMs = useMemo(
+    () => Math.max(0, otpResendAvailableAt - Date.now()),
+    [otpResendAvailableAt, otpTimerTick],
+  );
+
+  useEffect(() => {
+    if (!otpRequired || typeof window === 'undefined') {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      setOtpTimerTick(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [otpRequired]);
 
   useEffect(() => {
     let unsubscribeProfile: (() => void) | undefined;
@@ -135,13 +202,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         setProfile(null);
         setLoading(false);
+        setOtpRequired(false);
+        setOtpError(null);
+        setOtpDeliveryPending(false);
+        setOtpTargetEmail(null);
+        setOtpResendAvailableAt(0);
+        otpInitializedForRef.current = null;
         return;
       }
+
+      setOtpTargetEmail(currentUser.email ?? null);
 
       try {
         await ensureUserDocument(currentUser);
       } catch (error) {
         console.error('Failed to ensure user document exists:', error);
+      }
+
+      if (otpInitializedForRef.current !== currentUser.uid) {
+        try {
+          await prepareOtpForUser(currentUser);
+        } catch (error) {
+          console.error('Failed to initiate OTP verification:', error);
+        }
       }
 
       if (unsubscribeProfile) {
@@ -179,7 +262,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       unsubscribeAuth();
     };
-  }, []);
+  }, [prepareOtpForUser]);
 
   const signUpWithEmail = useMemo(
     () =>
@@ -260,9 +343,106 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [],
   );
 
+  const verifyOtp = useCallback(
+    async (code: string) => {
+      if (!firebaseUser) {
+        setOtpError('You must be signed in to verify a code.');
+        return;
+      }
+
+      const normalized = code.replace(/\D/g, '').slice(0, OTP_CODE_LENGTH);
+      if (normalized.length !== OTP_CODE_LENGTH) {
+        setOtpError(`Enter the ${OTP_CODE_LENGTH}-digit code we emailed you.`);
+        return;
+      }
+
+      setOtpVerifying(true);
+      setOtpError(null);
+
+      try {
+        await verifyOtpCode(firebaseUser.uid, normalized);
+        setOtpRequired(false);
+        setOtpDeliveryPending(false);
+        setOtpResendAvailableAt(0);
+        otpInitializedForRef.current = firebaseUser.uid;
+      } catch (error) {
+        if (error instanceof OtpError) {
+          setOtpError(error.message);
+          if (error.code === 'OTP_MAX_ATTEMPTS') {
+            await signOut(auth);
+          }
+        } else {
+          setOtpError('Failed to verify the code. Please try again.');
+        }
+      } finally {
+        setOtpVerifying(false);
+      }
+    },
+    [firebaseUser],
+  );
+
+  const resendOtp = useCallback(async () => {
+    if (!firebaseUser) {
+      setOtpError('Sign in again to request a new code.');
+      return;
+    }
+
+    if (otpDeliveryPending) {
+      return;
+    }
+
+    if (otpResendCooldownMs > 0) {
+      const waitSeconds = Math.ceil(otpResendCooldownMs / 1000);
+      setOtpError(`Please wait ${waitSeconds}s before requesting a new code.`);
+      return;
+    }
+
+    try {
+      await prepareOtpForUser(firebaseUser);
+    } catch (error) {
+      console.error('Failed to resend OTP:', error);
+    }
+  }, [firebaseUser, otpDeliveryPending, otpResendCooldownMs, prepareOtpForUser]);
+
   const value = useMemo<AuthContextValue>(
-    () => ({ firebaseUser, profile, loading, signUpWithEmail, signInWithEmail, signInWithGoogle, sendPasswordReset, deleteAccount, signOutUser }),
-    [firebaseUser, loading, profile, deleteAccount, sendPasswordReset, signInWithEmail, signInWithGoogle, signOutUser, signUpWithEmail]
+    () => ({
+      firebaseUser,
+      profile,
+      loading,
+      signUpWithEmail,
+      signInWithEmail,
+      signInWithGoogle,
+      sendPasswordReset,
+      deleteAccount,
+      signOutUser,
+      otpRequired,
+      otpDeliveryPending,
+      otpVerifying,
+      otpError,
+      otpTargetEmail,
+      otpResendCooldownMs,
+      verifyOtp,
+      resendOtp,
+    }),
+    [
+      firebaseUser,
+      profile,
+      loading,
+      signUpWithEmail,
+      signInWithEmail,
+      signInWithGoogle,
+      sendPasswordReset,
+      deleteAccount,
+      signOutUser,
+      otpRequired,
+      otpDeliveryPending,
+      otpVerifying,
+      otpError,
+      otpTargetEmail,
+      otpResendCooldownMs,
+      verifyOtp,
+      resendOtp,
+    ],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

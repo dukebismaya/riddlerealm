@@ -85,7 +85,14 @@ const mapAccountDeletionError = (error: unknown): string => {
 };
 
 const App: React.FC = () => {
-  const { profile: user, loading: authLoading, firebaseUser, deleteAccount, signOutUser } = useAuth();
+  const {
+    profile: user,
+    loading: authLoading,
+    firebaseUser,
+    deleteAccount,
+    signOutUser,
+    otpRequired,
+  } = useAuth();
   const [activeTab, setActiveTab] = useState<AppTab>('riddle');
   const [playMode, setPlayMode] = useState<PlayMode>('daily');
   const [isApiOnline, setIsApiOnline] = useState(true);
@@ -141,7 +148,7 @@ const App: React.FC = () => {
   }, [activeTab, accountDeleteError]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || otpRequired) {
       setLeaderboard([]);
       return;
     }
@@ -161,10 +168,10 @@ const App: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [user?.id]);
+  }, [user?.id, otpRequired]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || otpRequired) {
       setSubmissions([]);
       return;
     }
@@ -191,10 +198,10 @@ const App: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [user?.id]);
+  }, [user?.id, otpRequired]);
 
   useEffect(() => {
-    if (!user) {
+    if (!user || otpRequired) {
       setPracticeSolvedIds(new Set());
       return;
     }
@@ -223,7 +230,7 @@ const App: React.FC = () => {
     );
 
     return unsubscribe;
-  }, [user?.id]);
+  }, [user?.id, otpRequired]);
 
   useEffect(() => {
     const dailyRef = doc(db, 'dailyRiddle', 'current');
@@ -288,7 +295,7 @@ const App: React.FC = () => {
   }, [dailyRiddle?.id]);
 
   useEffect(() => {
-    if (!user || !dailyEntry || !dailyRiddle) {
+    if (!user || otpRequired || !dailyEntry || !dailyRiddle) {
       return;
     }
 
@@ -334,7 +341,7 @@ const App: React.FC = () => {
     );
 
     return unsubscribe;
-  }, [user?.id, dailyEntry, dailyRiddle]);
+  }, [user?.id, dailyEntry, dailyRiddle, otpRequired]);
 
   useEffect(() => {
     practiceHintCacheRef.current = { hints: [], roasts: [], index: 0 };
@@ -409,10 +416,10 @@ const App: React.FC = () => {
   );
 
   useEffect(() => {
-    if (playMode === 'practice' && !practiceRiddle && !isPracticeLoading) {
+    if (playMode === 'practice' && !practiceRiddle && !isPracticeLoading && !otpRequired) {
       void loadPracticeRiddle();
     }
-  }, [playMode, practiceRiddle, loadPracticeRiddle, isPracticeLoading]);
+  }, [playMode, practiceRiddle, loadPracticeRiddle, isPracticeLoading, otpRequired]);
 
   const rewardUser = useCallback(
     async (pointsDelta: number, streakDelta: number) => {
@@ -931,7 +938,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (!user) {
+  if (!user || otpRequired) {
     return <AuthScreen />;
   }
 

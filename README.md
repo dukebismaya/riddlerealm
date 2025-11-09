@@ -18,7 +18,7 @@ RiddleRealm is a React + Vite experience where players tackle daily riddles, unl
 ## Quick Start
 
 1. Install dependencies: `npm install`
-2. Copy `.env.example` to `.env.local` and fill in your API keys
+2. Copy `.env.example` to `.env.local` and fill in your API keys, Firebase config, and EmailJS credentials for OTP delivery
 3. Launch the dev server: `npm run dev`
 
 ## Core Features
@@ -27,3 +27,23 @@ RiddleRealm is a React + Vite experience where players tackle daily riddles, unl
 - Progressive hint ladder with playful roasts
 - Firebase authentication, profile tracking, and leaderboard scoring
 - Admin panel for managing riddles and reviewing player submissions
+- OTP-protected login with email-delivered confirmation codes
+
+## Environment Variables
+
+```
+VITE_GEMINI_API_KEY=
+
+VITE_FIREBASE_API_KEY=
+VITE_FIREBASE_AUTH_DOMAIN=
+VITE_FIREBASE_PROJECT_ID=
+VITE_FIREBASE_STORAGE_BUCKET=
+VITE_FIREBASE_MESSAGING_SENDER_ID=
+VITE_FIREBASE_APP_ID=
+VITE_FIREBASE_MEASUREMENT_ID=
+VITE_FIREBASE_ADMIN_EMAILS=
+
+VITE_EMAILJS_SERVICE_ID=
+VITE_EMAILJS_TEMPLATE_ID=
+VITE_EMAILJS_PUBLIC_KEY=
+```

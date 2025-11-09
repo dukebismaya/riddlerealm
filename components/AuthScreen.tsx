@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { FirebaseError } from 'firebase/app';
 import { useAuth } from '../contexts/AuthContext';
 import SiteFooter from './SiteFooter';
@@ -33,8 +33,40 @@ const mapFirebaseError = (error: unknown): string => {
 
 type AuthMode = 'signin' | 'signup';
 
+const maskEmail = (email: string | null | undefined) => {
+  if (!email) {
+    return null;
+  }
+  const [localPart, domain] = email.split('@');
+  if (!domain) {
+    return email;
+  }
+  if (localPart.length <= 2) {
+    return `${localPart[0] ?? ''}***@${domain}`;
+  }
+  const first = localPart[0];
+  const last = localPart[localPart.length - 1];
+  const hiddenCount = Math.max(1, localPart.length - 2);
+  return `${first}${'*'.repeat(hiddenCount)}${last}@${domain}`;
+};
+
 const AuthScreen: React.FC = () => {
-  const { signInWithEmail, signUpWithEmail, signInWithGoogle, sendPasswordReset } = useAuth();
+  const {
+    firebaseUser,
+    signInWithEmail,
+    signUpWithEmail,
+    signInWithGoogle,
+    sendPasswordReset,
+    signOutUser,
+    otpRequired,
+    otpDeliveryPending,
+    otpVerifying,
+    otpError,
+    otpTargetEmail,
+    otpResendCooldownMs,
+    verifyOtp,
+    resendOtp,
+  } = useAuth();
   const [mode, setMode] = useState<AuthMode>('signin');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -44,6 +76,8 @@ const AuthScreen: React.FC = () => {
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [resetEmailSent, setResetEmailSent] = useState(false);
   const [resetLoading, setResetLoading] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [otpTouched, setOtpTouched] = useState(false);
 
   const resetThreshold = 3;
 
@@ -66,6 +100,13 @@ const AuthScreen: React.FC = () => {
     setFailedAttempts(0);
     setResetEmailSent(false);
   };
+
+  useEffect(() => {
+    if (!otpRequired) {
+      setOtpCode('');
+      setOtpTouched(false);
+    }
+  }, [otpRequired]);
 
   const handleEmailAuth = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -123,7 +164,36 @@ const AuthScreen: React.FC = () => {
     }
   };
 
-  const heartbeatState = loading ? 'active' : error ? 'flat' : 'idle';
+  const heartbeatState =
+    loading || otpDeliveryPending || otpVerifying
+      ? 'active'
+      : error || otpError
+      ? 'flat'
+      : 'idle';
+
+  const countdownSeconds = Math.ceil(otpResendCooldownMs / 1000);
+  const resendDisabled = otpDeliveryPending || countdownSeconds > 0;
+  const maskedEmail = maskEmail(otpTargetEmail ?? firebaseUser?.email ?? undefined);
+
+  const handleOtpChange: React.ChangeEventHandler<HTMLInputElement> = (event) => {
+    const next = event.target.value.replace(/\D/g, '').slice(0, 6);
+    setOtpCode(next);
+  };
+
+  const handleOtpSubmit: React.FormEventHandler<HTMLFormElement> = async (event) => {
+    event.preventDefault();
+    setOtpTouched(true);
+    if (otpCode.length !== 6 || otpVerifying) {
+      return;
+    }
+    await verifyOtp(otpCode);
+  };
+
+  const handleOtpResend = async () => {
+    await resendOtp();
+  };
+
+  const otpValidationError = otpTouched && otpCode.length !== 6 ? 'Enter the full 6-digit code.' : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 flex flex-col p-4 text-white relative overflow-hidden isolate">
@@ -139,9 +209,78 @@ const AuthScreen: React.FC = () => {
           <h1 className="text-3xl font-bold text-cyan-300 text-center mb-2">{headingText}</h1>
           <p className="text-slate-300 text-center mb-8">{subheadingText}</p>
 
-          {error && <div className="mb-6 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
+          {!otpRequired && error && (
+            <div className="mb-6 rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>
+          )}
 
-          {mode === 'signin' && failedAttempts >= resetThreshold && (
+          {otpRequired && (
+            <div className="space-y-6">
+              <div className="rounded-lg border border-white/10 bg-white/5 p-4 text-sm text-slate-200">
+                <p>
+                  Enter the 6-digit code we sent to{' '}
+                  <span className="font-semibold text-cyan-200">{maskedEmail ?? 'your email address'}</span> to finish signing in.
+                </p>
+              </div>
+
+              {(otpError || otpValidationError) && (
+                <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-200">
+                  {otpError || otpValidationError}
+                </div>
+              )}
+
+              <form className="space-y-4" onSubmit={handleOtpSubmit}>
+                <div>
+                  <label htmlFor="otp" className="block text-sm font-medium text-slate-300 mb-1">
+                    Verification code
+                  </label>
+                  <input
+                    id="otp"
+                    type="tel"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="one-time-code"
+                    value={otpCode}
+                    onChange={handleOtpChange}
+                    onBlur={() => setOtpTouched(true)}
+                    placeholder="••••••"
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-lg tracking-[0.5em] text-white focus:border-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-60"
+                    disabled={otpVerifying}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full rounded-lg bg-emerald-500/80 hover:bg-emerald-500 font-semibold py-3 transition disabled:cursor-not-allowed disabled:bg-emerald-500/30"
+                  disabled={otpVerifying || otpCode.length !== 6}
+                >
+                  {otpVerifying ? 'Verifying…' : 'Confirm code'}
+                </button>
+              </form>
+
+              <div className="flex items-center justify-between text-sm text-slate-300">
+                <button
+                  type="button"
+                  onClick={handleOtpResend}
+                  disabled={resendDisabled}
+                  className="font-semibold text-cyan-300 hover:text-cyan-200 disabled:cursor-not-allowed disabled:text-slate-500"
+                >
+                  {resendDisabled ? `Resend in ${countdownSeconds}s` : "Didn't get the code? Resend"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => signOutUser()}
+                  className="text-sm text-slate-400 hover:text-slate-200"
+                >
+                  Switch account
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Your session stays locked until you verify this code. Each login triggers a fresh code to keep your account safe.
+              </p>
+            </div>
+          )}
+
+          {!otpRequired && mode === 'signin' && failedAttempts >= resetThreshold && (
             <div className="mb-6 rounded-lg border border-cyan-500/40 bg-cyan-500/10 p-4 text-sm text-cyan-100">
               <p className="font-semibold">Having trouble signing in?</p>
               <p className="mt-1 text-cyan-50/80">We can send you a password reset link so you can get back into the realm.</p>
@@ -161,82 +300,88 @@ const AuthScreen: React.FC = () => {
             </div>
           )}
 
-          <form className="space-y-5" onSubmit={handleEmailAuth}>
-            {mode === 'signup' && (
+          {!otpRequired && (
+            <form className="space-y-5" onSubmit={handleEmailAuth}>
+              {mode === 'signup' && (
+                <div>
+                  <label htmlFor="name" className="block text-sm font-medium text-slate-300 mb-1">
+                    Display name
+                  </label>
+                  <input
+                    id="name"
+                    type="text"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    placeholder="RiddleMaster"
+                    required
+                    className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
+                  />
+                </div>
+              )}
               <div>
-                <label htmlFor="name" className="block text-sm font-medium text-slate-300 mb-1">
-                  Display name
+                <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-1">
+                  Email
                 </label>
                 <input
-                  id="name"
-                  type="text"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  placeholder="RiddleMaster"
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
                   required
                   className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
                 />
               </div>
-            )}
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-1">
-                Email
-              </label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
-                required
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
-              />
-            </div>
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-slate-300 mb-1">
-                Password
-              </label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                placeholder="••••••••"
-                minLength={6}
-                required
-                className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full rounded-lg bg-cyan-500/70 hover:bg-cyan-500 font-semibold py-3 transition disabled:cursor-not-allowed disabled:bg-cyan-500/30"
-            >
-              {loading ? 'Working on it...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
-            </button>
-          </form>
+              <div>
+                <label htmlFor="password" className="block text-sm font-medium text-slate-300 mb-1">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  placeholder="••••••••"
+                  minLength={6}
+                  required
+                  className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-2 text-white focus:border-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400/40"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full rounded-lg bg-cyan-500/70 hover:bg-cyan-500 font-semibold py-3 transition disabled:cursor-not-allowed disabled:bg-cyan-500/30"
+              >
+                {loading ? 'Working on it...' : mode === 'signin' ? 'Sign In' : 'Create Account'}
+              </button>
+            </form>
+          )}
 
-          <div className="my-6 flex items-center gap-4">
-            <span className="flex-1 border-t border-white/10" />
-            <span className="text-xs uppercase tracking-widest text-slate-400">or</span>
-            <span className="flex-1 border-t border-white/10" />
-          </div>
+          {!otpRequired && (
+            <>
+              <div className="my-6 flex items-center gap-4">
+                <span className="flex-1 border-t border-white/10" />
+                <span className="text-xs uppercase tracking-widest text-slate-400">or</span>
+                <span className="flex-1 border-t border-white/10" />
+              </div>
 
-          <button
-            type="button"
-            disabled={loading}
-            onClick={handleGoogleSignIn}
-            className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white hover:bg-white/10 transition disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Continue with Google
-          </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleGoogleSignIn}
+                className="w-full rounded-lg border border-white/10 bg-white/5 px-4 py-3 font-semibold text-white hover:bg-white/10 transition disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Continue with Google
+              </button>
 
-          <p className="mt-6 text-center text-sm text-slate-400">
-            {mode === 'signin' ? 'Need an account?' : 'Already have an account?'}{' '}
-            <button type="button" onClick={toggleMode} className="font-semibold text-cyan-300 hover:text-cyan-200">
-              {mode === 'signin' ? 'Sign up' : 'Sign in'}
-            </button>
-          </p>
+              <p className="mt-6 text-center text-sm text-slate-400">
+                {mode === 'signin' ? 'Need an account?' : 'Already have an account?'}{' '}
+                <button type="button" onClick={toggleMode} className="font-semibold text-cyan-300 hover:text-cyan-200">
+                  {mode === 'signin' ? 'Sign up' : 'Sign in'}
+                </button>
+              </p>
+            </>
+          )}
         </div>
       </div>
       <SiteFooter className="mt-10 pb-6 relative z-10" />

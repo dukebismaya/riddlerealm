@@ -37,6 +37,7 @@ import {
 } from './types';
 import { DIFFICULTY_CONFIG } from './constants';
 import { fetchDailyRiddle, isApiAvailable } from './services/geminiService';
+import ApiUnavailable from './components/ApiUnavailable';
 import { fetchPublicRiddle } from './services/publicRiddleService';
 import { TrophyIcon, PlusIcon, AdminIcon, UserIcon } from './components/icons';
 import { useAuth } from './contexts/AuthContext';
@@ -95,7 +96,7 @@ const App: React.FC = () => {
   } = useAuth();
   const [activeTab, setActiveTab] = useState<AppTab>('riddle');
   const [playMode, setPlayMode] = useState<PlayMode>('daily');
-  const [isApiOnline, setIsApiOnline] = useState(true);
+  const [isApiOnline, setIsApiOnline] = useState<boolean>(() => isApiAvailable());
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [accountDeleteError, setAccountDeleteError] = useState<string | null>(null);
 
@@ -132,6 +133,7 @@ const App: React.FC = () => {
   }, [submissions]);
 
   useEffect(() => {
+    // keep runtime check in case environment changes (hot-reload / server-side)
     setIsApiOnline(isApiAvailable());
   }, []);
 
@@ -936,6 +938,11 @@ const App: React.FC = () => {
         <div className="w-16 h-16 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin" />
       </div>
     );
+  }
+
+  if (!isApiOnline) {
+    // If the developer hasn't provided an API key, show the minimal error UI only.
+    return <ApiUnavailable />;
   }
 
   if (!user || otpRequired) {

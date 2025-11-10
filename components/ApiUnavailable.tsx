@@ -1,7 +1,128 @@
-import React, { useMemo, useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { getDiagnostics, getDiagnosticsAsync, Diagnostic } from '../services/diagnostics';
 
+const mergeDetail = (current?: string, incoming?: string): string | undefined => {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  const addParts = (text?: string) => {
+    if (!text) return;
+    text
+      .split(/\n|;/)
+      .map((segment) => segment.trim())
+      .filter((segment) => segment.length > 0)
+      .forEach((segment) => {
+        if (!seen.has(segment)) {
+          parts.push(segment);
+          seen.add(segment);
+        }
+      });
+  };
+  addParts(current);
+  addParts(incoming);
+  if (parts.length === 0) return undefined;
+  return parts.join('; ');
+};
+
 const ApiUnavailable: React.FC = () => {
+  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>(() => getDiagnostics());
+  const [checkingReachability, setCheckingReachability] = useState(true);
+  const [collapsed, setCollapsed] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+
+    const mergeDiagnostics = (incoming: Diagnostic[] | null | undefined) => {
+      if (!incoming || incoming.length === 0) return;
+      setDiagnostics((current) => {
+        const map = new Map(current.map((entry) => [entry.key, { ...entry }]));
+        for (const item of incoming) {
+          const existing = map.get(item.key);
+          if (existing) {
+            const mergedDetail = mergeDetail(existing.detail, item.detail);
+            map.set(item.key, {
+              ...existing,
+              ok: typeof item.ok === 'boolean' ? item.ok : existing.ok,
+              detail: mergedDetail,
+            });
+          } else {
+            map.set(item.key, item);
+          }
+        }
+        return Array.from(map.values());
+      });
+    };
+
+    const fromServerless = (payload: any): Diagnostic[] => {
+      if (!payload || !Array.isArray(payload.results)) return [];
+      return payload.results.map((item: any) => {
+        const network = item.network || {};
+        const configured = Boolean(item.configured);
+        const reachable = network.reachable !== false;
+        const ok = configured && reachable;
+        const message = item.key === 'gemini'
+          ? (configured ? 'Gemini client seems configured.' : 'Gemini API key missing.')
+          : item.key === 'emailjs'
+            ? (configured ? 'EmailJS is configured.' : 'EmailJS configuration missing.')
+            : item.key;
+        const detailParts: string[] = [];
+        if (!reachable) {
+          detailParts.push(`Network: unreachable (${network.error ?? network.status ?? 'unknown error'})`);
+        } else {
+          detailParts.push('Network: reachable');
+          if (network.ok === false && typeof network.status !== 'undefined') {
+            detailParts.push(`Service responded with status ${network.status}.`);
+          }
+        }
+        if (!configured) {
+          detailParts.push('Not configured');
+        }
+        return {
+          key: item.key,
+          ok,
+          message,
+          detail: detailParts.join('; '),
+        } satisfies Diagnostic;
+      });
+    };
+
+    (async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
+        let consumedServerResponse = false;
+        try {
+          const response = await fetch('/api/health', { method: 'GET', signal: controller.signal });
+          if (response.ok) {
+            const payload = await response.json();
+            if (mounted) {
+              mergeDiagnostics(fromServerless(payload));
+              consumedServerResponse = true;
+            }
+          }
+        } catch (err) {
+          // serverless endpoint not reachable; fall back to client checks below
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (!consumedServerResponse) {
+          const asyncChecks = await getDiagnosticsAsync();
+          if (mounted) mergeDiagnostics(asyncChecks);
+        }
+      } catch (err) {
+        if (mounted) {
+          mergeDiagnostics([{ key: 'connectivity', ok: false, message: 'Connectivity checks failed.', detail: String(err) }]);
+        }
+      } finally {
+        if (mounted) setCheckingReachability(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <div style={{
       minHeight: '100vh',
@@ -106,26 +227,66 @@ const ApiUnavailable: React.FC = () => {
           The app detected missing or misconfigured services. Below are details to help you fix it.
         </p>
 
-        <div style={{ textAlign: 'left', marginTop: 8, marginBottom: 12 }}>
-          {useMemo(() => getDiagnostics(), []).map((d: Diagnostic) => (
-            <div key={d.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
-              <div style={{ width: 10, height: 10, borderRadius: 6, background: d.ok ? '#34d399' : '#ff6b6b', marginTop: 6 }} />
-              <div>
-                <div style={{ fontWeight: 600, color: d.ok ? '#bbf7d0' : '#ffd6d6' }}>{d.message}</div>
-                {d.detail && <div style={{ color: '#ddd', fontSize: 13 }}>{d.detail}</div>}
-              </div>
-            </div>
-          ))}
+        <button
+          type="button"
+          onClick={() => setCollapsed((prev) => !prev)}
+          aria-expanded={!collapsed}
+          aria-controls="diagnostic-panel"
+          style={{
+            marginTop: 12,
+            marginBottom: collapsed ? 0 : 12,
+            padding: '8px 14px',
+            borderRadius: 8,
+            border: '1px solid rgba(255,255,255,0.2)',
+            background: collapsed ? 'rgba(255,255,255,0.08)' : 'rgba(255,255,255,0.14)',
+            color: '#fff',
+            cursor: 'pointer',
+            fontSize: 14,
+            fontWeight: 600,
+            letterSpacing: '0.3px',
+            boxShadow: collapsed ? '0 6px 18px rgba(0,0,0,0.25)' : '0 10px 28px rgba(0,0,0,0.32)',
+            transform: collapsed ? 'translateY(0)' : 'translateY(-1px)',
+            transition: 'background 0.2s ease, box-shadow 0.25s ease, transform 0.2s ease',
+          }}
+        >
+          {collapsed ? 'Show diagnostics' : 'Hide diagnostics'}
+        </button>
 
-          {/* async connectivity results (will replace/add to the static list when ready) */}
-          <AsyncDiagnostics />
+        <div
+          id="diagnostic-panel"
+          aria-hidden={collapsed}
+          style={{
+            textAlign: 'left',
+            marginTop: 12,
+            marginBottom: collapsed ? 0 : 12,
+            maxHeight: collapsed ? '0px' : '640px',
+            opacity: collapsed ? 0 : 1,
+            overflow: 'hidden',
+            transition: 'max-height 0.45s ease, opacity 0.35s ease',
+            backdropFilter: collapsed ? 'blur(0px)' : 'blur(2px)',
+          }}
+        >
+          <div style={{ paddingTop: collapsed ? 0 : 2, paddingBottom: collapsed ? 0 : 2 }}>
+            {diagnostics.map((d: Diagnostic) => (
+              <div key={d.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+                <div style={{ width: 10, height: 10, borderRadius: 6, background: d.ok ? '#34d399' : '#ff6b6b', marginTop: 6 }} />
+                <div>
+                  <div style={{ fontWeight: 600, color: d.ok ? '#bbf7d0' : '#ffd6d6' }}>{d.message}</div>
+                  {d.detail && <div style={{ color: '#ddd', fontSize: 13 }}>{d.detail}</div>}
+                </div>
+              </div>
+            ))}
+            {checkingReachability && (
+              <div style={{ color: '#ccc', fontSize: 13, marginTop: 8 }}>Checking network reachability…</div>
+            )}
+          </div>
         </div>
 
         <p style={{ color: '#ddd', marginBottom: 6 }}>
           If you're the site owner, ensure environment variables are set (for example <code>VITE_GEMINI_API_KEY</code>).
         </p>
         <p style={{ color: '#ffdcdc' }}>
-          For help, contact: <a className="contact" href="mailto:bismayajyotidalei@gmail.com">bismayajyotidalei@gmail.com</a>
+          For help, contact: <a className="contact" href="mailto:bismayajyotidalei@gmail.com">Bismaya</a>
         </p>
       </div>
     </div>
@@ -133,110 +294,3 @@ const ApiUnavailable: React.FC = () => {
 };
 
 export default ApiUnavailable;
-
-const AsyncDiagnostics: React.FC = () => {
-  const [results, setResults] = useState<Diagnostic[] | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        // Prefer serverless health endpoint if available
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 2500);
-        let usedServer = false;
-        try {
-          const r = await fetch('/api/health', { method: 'GET', signal: controller.signal });
-          clearTimeout(id);
-          if (r.ok) {
-            const payload = await r.json();
-            // Map server payload to Diagnostic[]
-            const mapped: Diagnostic[] = [];
-            if (payload && Array.isArray(payload.results)) {
-              for (const item of payload.results) {
-                const network = item.network || {};
-                const configured = Boolean(item.configured);
-                const reachable = network.reachable !== false;
-                const ok = configured && reachable;
-                const message = item.key === 'gemini'
-                  ? (configured ? 'Gemini client seems configured.' : 'Gemini API key missing.')
-                  : item.key === 'emailjs'
-                    ? (configured ? 'EmailJS is configured.' : 'EmailJS configuration missing.')
-                    : item.key;
-                const detailParts = [];
-                if (!reachable) {
-                  detailParts.push(`Network: unreachable (${network.error ?? network.status})`);
-                } else {
-                  detailParts.push('Network: reachable');
-                  if (network.ok === false && typeof network.status !== 'undefined') {
-                    detailParts.push(`Service responded with status ${network.status}.`);
-                  }
-                }
-                if (!configured) {
-                  detailParts.push('Not configured');
-                }
-                mapped.push({ key: item.key, ok, message, detail: detailParts.join('; ') });
-              }
-            }
-            if (mounted) {
-              setResults(mapped);
-              usedServer = true;
-            }
-          }
-        } catch (e) {
-          // serverless endpoint not available or fetch failed; fall back to client checks
-        } finally {
-          clearTimeout(id);
-        }
-
-        if (!usedServer) {
-          const res = await getDiagnosticsAsync();
-          if (mounted) setResults(res);
-        }
-      } catch (e) {
-        if (mounted) setResults([{ key: 'connectivity', ok: false, message: 'Connectivity checks failed.', detail: String(e) }]);
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    })();
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const syncList = useMemo(() => getDiagnostics(), []);
-
-  if (loading) {
-    return <div style={{ color: '#ccc', fontSize: 13, marginTop: 8 }}>Checking network reachability…</div>;
-  }
-
-  if (!results || results.length === 0) return null;
-
-  // Filter async results to only show items that differ from the static sync list
-  const filtered = results.filter((ar) => {
-    const base = syncList.find((s) => s.key === ar.key);
-    if (!base) return true;
-    if (base.ok !== ar.ok) return true;
-    const baseDetail = (base.detail || '').trim();
-    const arDetail = (ar.detail || '').trim();
-    return baseDetail !== arDetail;
-  });
-
-  if (filtered.length === 0) return null;
-
-  return (
-    <div style={{ marginTop: 8 }}>
-      {filtered.map((d) => (
-        <div key={`async-${d.key}`} style={{ display: 'flex', gap: 10, marginBottom: 6 }}>
-          <div style={{ width: 10, height: 10, borderRadius: 6, background: d.ok ? '#34d399' : '#ff6b6b', marginTop: 6 }} />
-          <div>
-            <div style={{ fontWeight: 600, color: d.ok ? '#bbf7d0' : '#ffd6d6' }}>{d.message}</div>
-            {d.detail && <div style={{ color: '#ddd', fontSize: 13 }}>{d.detail}</div>}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-};

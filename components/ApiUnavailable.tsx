@@ -157,17 +157,21 @@ const AsyncDiagnostics: React.FC = () => {
               for (const item of payload.results) {
                 const network = item.network || {};
                 const configured = Boolean(item.configured);
-                const ok = configured && (network.ok === true);
+                const reachable = network.reachable !== false;
+                const ok = configured && reachable;
                 const message = item.key === 'gemini'
                   ? (configured ? 'Gemini client seems configured.' : 'Gemini API key missing.')
                   : item.key === 'emailjs'
                     ? (configured ? 'EmailJS is configured.' : 'EmailJS configuration missing.')
                     : item.key;
                 const detailParts = [];
-                if (network && network.ok === false) {
+                if (!reachable) {
                   detailParts.push(`Network: unreachable (${network.error ?? network.status})`);
-                } else if (network && network.ok === true) {
+                } else {
                   detailParts.push('Network: reachable');
+                  if (network.ok === false && typeof network.status !== 'undefined') {
+                    detailParts.push(`Service responded with status ${network.status}.`);
+                  }
                 }
                 if (!configured) {
                   detailParts.push('Not configured');

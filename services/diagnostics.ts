@@ -62,20 +62,23 @@ export const getDiagnostics = (): Diagnostic[] => {
   return diagnostics;
 };
 
-const fetchWithTimeout = async (url: string, timeoutMs = 3000): Promise<{ ok: boolean; error?: string }> => {
+const fetchWithTimeout = async (
+  url: string,
+  timeoutMs = 3000,
+): Promise<{ ok: boolean; status?: number; reachable: boolean; error?: string }> => {
   try {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     // Use HEAD when possible, fallback to GET if not allowed
     const res = await fetch(url, { method: 'HEAD', mode: 'cors', signal: controller.signal });
     clearTimeout(id);
-    return { ok: res.ok };
+    return { ok: res.ok, status: res.status, reachable: true };
   } catch (err: any) {
     if (err?.name === 'AbortError') {
-      return { ok: false, error: 'timeout' };
+      return { ok: false, reachable: false, error: 'timeout' };
     }
     // Could be network or CORS error; return the message when available
-    return { ok: false, error: err?.message || String(err) };
+    return { ok: false, reachable: false, error: err?.message || String(err) };
   }
 };
 
@@ -90,12 +93,15 @@ export const getDiagnosticsAsync = async (): Promise<Diagnostic[]> => {
   if (emailDiag) {
     try {
       const ping = await fetchWithTimeout('https://api.emailjs.com', 2500);
-      if (ping.ok) {
+      if (ping.reachable !== false) {
         emailDiag.detail = (emailDiag.detail ? emailDiag.detail + ' ' : '') + 'Network: reachable.';
         emailDiag.ok = emailDiag.ok !== false ? true : false;
       } else {
         emailDiag.detail = (emailDiag.detail ? emailDiag.detail + ' ' : '') + `Network: unreachable (${ping.error}).`;
         emailDiag.ok = false;
+      }
+      if (ping.reachable && !ping.ok) {
+        emailDiag.detail = (emailDiag.detail ? emailDiag.detail + ' ' : '') + `Service responded with status ${ping.status}.`;
       }
     } catch (e) {
       emailDiag.detail = (emailDiag.detail ? emailDiag.detail + ' ' : '') + `Network check failed.`;
@@ -114,12 +120,15 @@ export const getDiagnosticsAsync = async (): Promise<Diagnostic[]> => {
     if (computedKey) {
       try {
         const ping = await fetchWithTimeout('https://generativelanguage.googleapis.com', 2500);
-        if (ping.ok) {
+        if (ping.reachable !== false) {
           gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + 'Network: reachable.';
           gemDiag.ok = gemDiag.ok !== false ? true : false;
         } else {
           gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Network: unreachable (${ping.error}).`;
           gemDiag.ok = false;
+        }
+        if (ping.reachable && !ping.ok) {
+          gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Service responded with status ${ping.status}.`;
         }
       } catch (e) {
         gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Network check failed.`;

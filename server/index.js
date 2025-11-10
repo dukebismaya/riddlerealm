@@ -10,10 +10,10 @@ const fetchWithTimeout = async (url, timeoutMs = 3000) => {
   try {
     const res = await fetch(url, { method: 'HEAD', signal: controller.signal });
     clearTimeout(id);
-    return { ok: res.ok, status: res.status };
+    return { ok: res.ok, status: res.status, reachable: true };
   } catch (err) {
     clearTimeout(id);
-    return { ok: false, error: err?.message || String(err) };
+    return { ok: false, reachable: false, error: err?.message || String(err) };
   }
 };
 

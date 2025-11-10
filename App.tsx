@@ -86,6 +86,12 @@ const mapAccountDeletionError = (error: unknown): string => {
 };
 
 const App: React.FC = () => {
+  const requireDb = useCallback(() => {
+    if (!db) {
+      throw new Error('Firestore is not configured. Ensure Firebase environment variables are set.');
+    }
+    return db;
+  }, []);
   const {
     profile: user,
     loading: authLoading,
@@ -150,6 +156,11 @@ const App: React.FC = () => {
   }, [activeTab, accountDeleteError]);
 
   useEffect(() => {
+    if (!db) {
+      setLeaderboard([]);
+      return;
+    }
+
     if (!user || otpRequired) {
       setLeaderboard([]);
       return;
@@ -173,6 +184,11 @@ const App: React.FC = () => {
   }, [user?.id, otpRequired]);
 
   useEffect(() => {
+    if (!db) {
+      setSubmissions([]);
+      return;
+    }
+
     if (!user || otpRequired) {
       setSubmissions([]);
       return;
@@ -203,6 +219,11 @@ const App: React.FC = () => {
   }, [user?.id, otpRequired]);
 
   useEffect(() => {
+    if (!db) {
+      setPracticeSolvedIds(new Set());
+      return;
+    }
+
     if (!user || otpRequired) {
       setPracticeSolvedIds(new Set());
       return;
@@ -235,6 +256,16 @@ const App: React.FC = () => {
   }, [user?.id, otpRequired]);
 
   useEffect(() => {
+    if (!db) {
+      setDailyEntry(null);
+      setDailyRiddle(null);
+      setDailyGameState('loading');
+      setDailyAttemptsLeft(0);
+      setDailyProgressStatus('pending');
+      setDailyError('Firebase is not configured. Daily riddles are unavailable.');
+      return;
+    }
+
     const dailyRef = doc(db, 'dailyRiddle', 'current');
     const unsubscribe = onSnapshot(
       dailyRef,
@@ -297,6 +328,10 @@ const App: React.FC = () => {
   }, [dailyRiddle?.id]);
 
   useEffect(() => {
+    if (!db) {
+      return;
+    }
+
     if (!user || otpRequired || !dailyEntry || !dailyRiddle) {
       return;
     }
@@ -428,7 +463,8 @@ const App: React.FC = () => {
       if (!user) return;
 
       try {
-        const userRef = doc(db, 'users', user.id);
+        const firestore = requireDb();
+        const userRef = doc(firestore, 'users', user.id);
         const updates: Record<string, unknown> = {
           updatedAt: serverTimestamp(),
         };
@@ -445,13 +481,14 @@ const App: React.FC = () => {
         console.error('Failed to update user stats:', error);
       }
     },
-    [user]
+    [user, requireDb]
   );
 
   const resetUserStreak = useCallback(async () => {
     if (!user) return;
     try {
-      const userRef = doc(db, 'users', user.id);
+      const firestore = requireDb();
+      const userRef = doc(firestore, 'users', user.id);
       await updateDoc(userRef, {
         streak: 0,
         updatedAt: serverTimestamp(),
@@ -459,7 +496,7 @@ const App: React.FC = () => {
     } catch (err) {
       console.error('Failed to reset streak:', err);
     }
-  }, [user]);
+  }, [user, requireDb]);
 
   const recordDailyProgress = useCallback(
     async (status: DailyProgressStatus) => {
@@ -473,8 +510,9 @@ const App: React.FC = () => {
 
       const progressId = `${user.id}_${dailyEntry.date}`;
       try {
+        const firestore = requireDb();
         await setDoc(
-          doc(db, 'dailyProgress', progressId),
+          doc(firestore, 'dailyProgress', progressId),
           {
             id: progressId,
             userId: user.id,
@@ -490,7 +528,7 @@ const App: React.FC = () => {
         console.error('Failed to record daily progress:', error);
       }
     },
-    [user, dailyEntry, dailyRiddle, dailyProgressStatus]
+    [user, dailyEntry, dailyRiddle, dailyProgressStatus, requireDb]
   );
 
   const handleDailyCorrect = useCallback(async () => {
@@ -562,9 +600,10 @@ const App: React.FC = () => {
       }
 
       try {
+        const firestore = requireDb();
         const progressId = `${user.id}_${riddle.id}`;
         await setDoc(
-          doc(db, 'practiceProgress', progressId),
+          doc(firestore, 'practiceProgress', progressId),
           {
             id: progressId,
             userId: user.id,
@@ -578,7 +617,7 @@ const App: React.FC = () => {
         console.error('Failed to record practice solve:', error);
       }
     },
-    [user],
+    [user, requireDb],
   );
 
   const handlePracticeCorrect = useCallback(async () => {
@@ -652,7 +691,8 @@ const App: React.FC = () => {
       }
 
       try {
-        await addDoc(collection(db, 'submissions'), {
+        const firestore = requireDb();
+        await addDoc(collection(firestore, 'submissions'), {
           riddle: submission.riddle,
           answer: submission.answer,
           difficulty: submission.difficulty,
@@ -667,7 +707,7 @@ const App: React.FC = () => {
         throw err instanceof Error ? err : new Error('Failed to submit riddle.');
       }
     },
-    [user]
+    [user, requireDb]
   );
 
   const handleApproveRiddle = useCallback(
@@ -676,7 +716,8 @@ const App: React.FC = () => {
         throw new Error('Only admins can approve riddles.');
       }
       try {
-        const submissionRef = doc(db, 'submissions', id);
+        const firestore = requireDb();
+        const submissionRef = doc(firestore, 'submissions', id);
         await updateDoc(submissionRef, {
           status: 'approved',
           updatedAt: serverTimestamp(),
@@ -687,7 +728,7 @@ const App: React.FC = () => {
         throw err instanceof Error ? err : new Error('Failed to approve riddle.');
       }
     },
-    [isAdmin, user]
+    [isAdmin, user, requireDb]
   );
 
   const handleUpdateRiddle = useCallback(
@@ -696,7 +737,8 @@ const App: React.FC = () => {
         throw new Error('Only admins can update riddles.');
       }
       try {
-        const submissionRef = doc(db, 'submissions', id);
+        const firestore = requireDb();
+        const submissionRef = doc(firestore, 'submissions', id);
         await updateDoc(submissionRef, {
           ...('riddle' in updates ? { riddle: updates.riddle } : {}),
           ...('answer' in updates ? { answer: updates.answer } : {}),
@@ -708,7 +750,7 @@ const App: React.FC = () => {
         throw err instanceof Error ? err : new Error('Failed to update riddle.');
       }
     },
-    [isAdmin, user]
+    [isAdmin, user, requireDb]
   );
 
   const handleDeleteRiddle = useCallback(
@@ -717,13 +759,14 @@ const App: React.FC = () => {
         throw new Error('Only admins can delete riddles.');
       }
       try {
-        await deleteDoc(doc(db, 'submissions', id));
+        const firestore = requireDb();
+        await deleteDoc(doc(firestore, 'submissions', id));
       } catch (err) {
         console.error('Failed to delete riddle:', err);
         throw err instanceof Error ? err : new Error('Failed to delete riddle.');
       }
     },
-    [isAdmin, user]
+    [isAdmin, user, requireDb]
   );
 
   const handleSetDailyRiddle = useCallback(
@@ -733,7 +776,8 @@ const App: React.FC = () => {
       }
 
       try {
-        const dailyRef = doc(db, 'dailyRiddle', 'current');
+        const firestore = requireDb();
+        const dailyRef = doc(firestore, 'dailyRiddle', 'current');
         const date = new Date().toISOString().split('T')[0];
         await setDoc(
           dailyRef,
@@ -754,7 +798,7 @@ const App: React.FC = () => {
         throw err instanceof Error ? err : new Error('Failed to set daily riddle.');
       }
     },
-    [isAdmin, user]
+    [isAdmin, user, requireDb]
   );
 
   const handleAccountDelete = useCallback(

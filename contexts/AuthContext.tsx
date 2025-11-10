@@ -121,7 +121,11 @@ const sanitizeUserDoc = (docData: DocumentData, fallback: Partial<User>): User =
 };
 
 const ensureUserDocument = async (firebaseUser: FirebaseUser, overrides?: Partial<User>) => {
-  const userRef = doc(db, 'users', firebaseUser.uid);
+  if (!db) {
+    throw new Error('Firestore is not configured. Please provide Firebase credentials.');
+  }
+  const dbInstance = db;
+  const userRef = doc(dbInstance, 'users', firebaseUser.uid);
   const snapshot = await getDoc(userRef);
   const displayName = overrides?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Explorer';
   const derivedRole = overrides?.role || resolveRole(firebaseUser.email);
@@ -143,7 +147,7 @@ const ensureUserDocument = async (firebaseUser: FirebaseUser, overrides?: Partia
       baseDoc.avatarUrl = overrides?.avatarUrl ?? firebaseUser.photoURL;
     }
 
-    await setDoc(userRef, baseDoc, { merge: true });
+  await setDoc(userRef, baseDoc, { merge: true });
     return;
   }
 
@@ -179,6 +183,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [otpResendAvailableAt, setOtpResendAvailableAt] = useState<number>(0);
   const [otpTimerTick, setOtpTimerTick] = useState(() => Date.now());
   const otpInitializedForRef = useRef<string | null>(null);
+  const firebaseUnavailable = !auth || !db;
 
   const prepareOtpForUser = useCallback(async (user: FirebaseUser) => {
     if (!user.email) {
@@ -211,6 +216,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const signOutUser = useCallback(async () => {
+    if (!auth) {
+      throw new Error('Authentication service is unavailable because Firebase is not configured.');
+    }
     const currentId = auth.currentUser?.uid;
     if (currentId) {
       clearOtpVerified(currentId);
@@ -238,9 +246,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [otpRequired]);
 
   useEffect(() => {
+    if (!auth || !db) {
+      setLoading(false);
+      setFirebaseUser(null);
+      setProfile(null);
+      setOtpRequired(false);
+      setOtpDeliveryPending(false);
+      setOtpError(null);
+      setOtpTargetEmail(null);
+      setOtpResendAvailableAt(0);
+      otpInitializedForRef.current = null;
+      return;
+    }
+
+    const authInstance = auth;
+    const dbInstance = db;
     let unsubscribeProfile: (() => void) | undefined;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, async (currentUser) => {
+    const unsubscribeAuth = onAuthStateChanged(authInstance, async (currentUser) => {
       setFirebaseUser(currentUser);
       if (!currentUser) {
         if (unsubscribeProfile) {
@@ -286,7 +309,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         unsubscribeProfile();
       }
 
-      const userRef = doc(db, 'users', currentUser.uid);
+      const userRef = doc(dbInstance, 'users', currentUser.uid);
       unsubscribeProfile = onSnapshot(
         userRef,
         (snapshot) => {
@@ -317,11 +340,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
       unsubscribeAuth();
     };
-  }, [prepareOtpForUser]);
+  }, [prepareOtpForUser, firebaseUnavailable]);
 
   const signUpWithEmail = useMemo(
     () =>
       async ({ name, email, password }: { name: string; email: string; password: string }) => {
+        if (!auth) {
+          throw new Error('Authentication service is unavailable. Configure Firebase to enable sign up.');
+        }
         const credential = await createUserWithEmailAndPassword(auth, email, password);
         if (name) {
           await updateProfile(credential.user, { displayName: name });
@@ -333,6 +359,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithEmail = useMemo(
     () => async ({ email, password }: { email: string; password: string }) => {
+      if (!auth) {
+        throw new Error('Authentication service is unavailable. Configure Firebase to enable sign in.');
+      }
       await signInWithEmailAndPassword(auth, email, password);
     },
     []
@@ -340,6 +369,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const signInWithGoogle = useMemo(
     () => async () => {
+      if (!auth) {
+        throw new Error('Authentication service is unavailable. Configure Firebase to enable sign in.');
+      }
       const provider = new GoogleAuthProvider();
       const result = await signInWithPopup(auth, provider);
       await ensureUserDocument(result.user, { name: result.user.displayName ?? undefined });
@@ -349,6 +381,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const sendPasswordReset = useMemo(
     () => async (email: string) => {
+      if (!auth) {
+        throw new Error('Password reset is unavailable because Firebase is not configured.');
+      }
       await sendPasswordResetEmail(auth, email);
     },
     [],
@@ -357,6 +392,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const deleteAccount = useMemo(
     () =>
       async ({ password }: { password?: string } = {}) => {
+        if (!auth) {
+          throw new Error('Authentication service is unavailable. Unable to delete account without Firebase.');
+        }
         const currentUser = auth.currentUser;
 
         if (!currentUser) {
@@ -419,7 +457,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (error instanceof OtpError) {
           setOtpError(error.message);
           if (error.code === 'OTP_MAX_ATTEMPTS') {
-            await signOut(auth);
+            if (auth) {
+              await signOut(auth);
+            }
           }
         } else {
           setOtpError('Failed to verify the code. Please try again.');

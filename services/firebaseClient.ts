@@ -1,6 +1,6 @@
-import { FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { FirebaseApp, FirebaseOptions, getApp, getApps, initializeApp } from 'firebase/app';
+import { Auth, getAuth } from 'firebase/auth';
+import { Firestore, getFirestore } from 'firebase/firestore';
 
 type FirebaseConfig = {
   apiKey: string | undefined;
@@ -20,22 +20,29 @@ const firebaseConfig: FirebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
-const ensureConfigValues = (config: FirebaseConfig) => {
-  const missingKeys = Object.entries(config)
-    .filter(([, value]) => !value)
-    .map(([key]) => key);
+const missingConfigKeys = Object.entries(firebaseConfig)
+  .filter(([, value]) => !value)
+  .map(([key]) => key);
 
-  if (missingKeys.length) {
-    console.warn(
-      `Missing Firebase config values for: ${missingKeys.join(', ')}. Authentication features will be limited until these are provided.`
-    );
-  }
-};
+if (missingConfigKeys.length) {
+  console.warn(
+    `Missing Firebase config values for: ${missingConfigKeys.join(', ')}. Authentication features will be limited until these are provided.`
+  );
+}
 
-ensureConfigValues(firebaseConfig);
+let app: FirebaseApp | null = null;
+let authInstance: Auth | null = null;
+let firestoreInstance: Firestore | null = null;
 
-const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
+if (missingConfigKeys.length === 0) {
+  const options = firebaseConfig as FirebaseOptions;
+  app = getApps().length ? getApp() : initializeApp(options);
+  authInstance = getAuth(app);
+  firestoreInstance = getFirestore(app);
+}
 
 export const firebaseApp = app;
-export const auth = getAuth(app);
-export const db = getFirestore(app);
+export const auth = authInstance;
+export const db = firestoreInstance;
+export const isFirebaseConfigured = missingConfigKeys.length === 0;
+export const missingFirebaseConfigKeys = missingConfigKeys;

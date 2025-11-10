@@ -60,6 +60,43 @@ const ADMIN_EMAILS = (import.meta.env.VITE_FIREBASE_ADMIN_EMAILS || '')
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const OTP_CODE_LENGTH = 6;
+const OTP_VERIFIED_PREFIX = 'riddlerealm:otpVerified:';
+
+const getOtpStorageKey = (userId: string) => `${OTP_VERIFIED_PREFIX}${userId}`;
+
+const readStoredOtpVerification = (userId: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(getOtpStorageKey(userId));
+  } catch (error) {
+    console.warn('Unable to read OTP verification status from storage.', error);
+    return null;
+  }
+};
+
+const markOtpVerified = (userId: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(getOtpStorageKey(userId), Date.now().toString());
+  } catch (error) {
+    console.warn('Unable to persist OTP verification status.', error);
+  }
+};
+
+const clearOtpVerified = (userId: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(getOtpStorageKey(userId));
+  } catch (error) {
+    console.warn('Unable to clear OTP verification status.', error);
+  }
+};
 
 const resolveRole = (email: string | null | undefined): AuthRole => {
   if (!email) {
@@ -155,6 +192,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setOtpRequired(true);
     setOtpError(null);
 
+    clearOtpVerified(user.uid);
+
     try {
       await createOtpChallenge(user.uid, user.email);
       otpInitializedForRef.current = user.uid;
@@ -169,6 +208,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } finally {
       setOtpDeliveryPending(false);
     }
+  }, []);
+
+  const signOutUser = useCallback(async () => {
+    const currentId = auth.currentUser?.uid;
+    if (currentId) {
+      clearOtpVerified(currentId);
+    }
+    await signOut(auth);
   }, []);
 
   const otpResendCooldownMs = useMemo(
@@ -219,7 +266,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to ensure user document exists:', error);
       }
 
-      if (otpInitializedForRef.current !== currentUser.uid) {
+      const storedVerification = readStoredOtpVerification(currentUser.uid);
+
+      if (storedVerification) {
+        setOtpRequired(false);
+        setOtpDeliveryPending(false);
+        setOtpError(null);
+        setOtpResendAvailableAt(0);
+        otpInitializedForRef.current = currentUser.uid;
+      } else if (otpInitializedForRef.current !== currentUser.uid) {
         try {
           await prepareOtpForUser(currentUser);
         } catch (error) {
@@ -292,13 +347,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     []
   );
 
-  const signOutUser = useMemo(
-    () => async () => {
-      await signOut(auth);
-    },
-    [],
-  );
-
   const sendPasswordReset = useMemo(
     () => async (email: string) => {
       await sendPasswordResetEmail(auth, email);
@@ -331,6 +379,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             await reauthenticateWithPopup(currentUser, googleProvider);
           }
 
+          clearOtpVerified(currentUser.uid);
           await deleteUserData(currentUser.uid);
           await deleteUser(currentUser);
         } catch (error) {
@@ -365,6 +414,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setOtpDeliveryPending(false);
         setOtpResendAvailableAt(0);
         otpInitializedForRef.current = firebaseUser.uid;
+        markOtpVerified(firebaseUser.uid);
       } catch (error) {
         if (error instanceof OtpError) {
           setOtpError(error.message);

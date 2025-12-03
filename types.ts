@@ -15,6 +15,8 @@ export interface Riddle {
   source?: 'firestore' | 'offline' | 'public-api';
 }
 
+export type UserApprovalStatus = 'pending' | 'approved' | 'denied';
+
 export interface User {
   id: string;
   name: string;
@@ -24,6 +26,11 @@ export interface User {
   badge: string;
   role?: 'player' | 'admin';
   avatarUrl?: string;
+  approvalStatus?: UserApprovalStatus;
+  approvalRequestedAt?: string;
+  approvalUpdatedAt?: string;
+  approvalDeniedAt?: string;
+  approvalDenialReason?: string;
 }
 
 export type DailyProgressStatus = 'pending' | 'solved' | 'failed';

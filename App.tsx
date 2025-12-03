@@ -23,6 +23,8 @@ import SubmissionPanel from './components/SubmissionPanel';
 import AdminPanel from './components/AdminPanel';
 import AccountSettings from './components/AccountSettings';
 import AuthScreen from './components/AuthScreen';
+import PendingApprovalNotice from './components/PendingApprovalNotice';
+import UserApprovalQueue from './components/UserApprovalQueue';
 import {
   Riddle,
   LeaderboardEntry,
@@ -55,6 +57,13 @@ type HintCache = {
   index: number;
 };
 
+type PendingUserAccount = {
+  id: string;
+  name: string;
+  email?: string;
+  approvalRequestedAt?: string;
+};
+
 const mapAccountDeletionError = (error: unknown): string => {
   if (error instanceof Error) {
     if (error.message === 'PASSWORD_REQUIRED') {
@@ -85,6 +94,32 @@ const mapAccountDeletionError = (error: unknown): string => {
     : 'Failed to delete your account. Please try again.';
 };
 
+const toIsoString = (value: unknown): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  if (
+    typeof value === 'object' &&
+    value !== null &&
+    'toDate' in value &&
+    typeof (value as { toDate?: () => Date }).toDate === 'function'
+  ) {
+    try {
+      return ((value as { toDate: () => Date }).toDate()).toISOString();
+    } catch (error) {
+      console.warn('Failed to format Firestore timestamp.', error);
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
+
 const App: React.FC = () => {
   const requireDb = useCallback(() => {
     if (!db) {
@@ -108,6 +143,9 @@ const App: React.FC = () => {
 
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [pendingUsers, setPendingUsers] = useState<PendingUserAccount[]>([]);
+  const [resolvingUserId, setResolvingUserId] = useState<string | null>(null);
+  const [userApprovalError, setUserApprovalError] = useState<string | null>(null);
 
   const [dailyEntry, setDailyEntry] = useState<DailyRiddleEntry | null>(null);
   const [dailyRiddle, setDailyRiddle] = useState<Riddle | null>(null);
@@ -131,6 +169,10 @@ const App: React.FC = () => {
   const requiresPasswordForDeletion = providerData.some((provider) => provider.providerId === 'password');
   const willPromptGoogleReauth = !requiresPasswordForDeletion && providerData.some((provider) => provider.providerId === 'google.com');
   const accountEmail = firebaseUser?.email ?? user?.email ?? null;
+  const approvalStatus = user?.approvalStatus ?? 'pending';
+  const isApprovalRestricted = Boolean(user && user.role !== 'admin' && approvalStatus !== 'approved');
+  const isDeniedAccess = Boolean(isApprovalRestricted && approvalStatus === 'denied');
+  const isPendingApproval = Boolean(isApprovalRestricted && !isDeniedAccess);
 
   const approvedRiddles = useMemo(() => {
     return submissions
@@ -161,7 +203,7 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!user || otpRequired) {
+    if (!user || otpRequired || isApprovalRestricted) {
       setLeaderboard([]);
       return;
     }
@@ -181,7 +223,7 @@ const App: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [user?.id, otpRequired]);
+  }, [user?.id, otpRequired, isApprovalRestricted]);
 
   useEffect(() => {
     if (!db) {
@@ -189,7 +231,7 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!user || otpRequired) {
+    if (!user || otpRequired || isApprovalRestricted) {
       setSubmissions([]);
       return;
     }
@@ -216,7 +258,43 @@ const App: React.FC = () => {
     });
 
     return unsubscribe;
-  }, [user?.id, otpRequired]);
+  }, [user?.id, otpRequired, isApprovalRestricted]);
+
+  useEffect(() => {
+    if (!db) {
+      setPendingUsers([]);
+      return;
+    }
+
+    if (!user || !isAdmin || otpRequired) {
+      setPendingUsers([]);
+      return;
+    }
+
+    const pendingQuery = query(collection(db, 'users'), where('approvalStatus', '==', 'pending'));
+    const unsubscribe = onSnapshot(
+      pendingQuery,
+      (snapshot) => {
+        const pending = snapshot.docs.map((docSnapshot) => {
+          const data = docSnapshot.data();
+          return {
+            id: docSnapshot.id,
+            name: data.name || 'Explorer',
+            email: data.email ?? undefined,
+            approvalRequestedAt:
+              toIsoString(data.approvalRequestedAt) ?? toIsoString(data.createdAt) ?? undefined,
+          } satisfies PendingUserAccount;
+        });
+        setPendingUsers(pending);
+      },
+      (error) => {
+        console.error('Failed to load pending users:', error);
+        setPendingUsers([]);
+      },
+    );
+
+    return unsubscribe;
+  }, [user?.id, isAdmin, otpRequired]);
 
   useEffect(() => {
     if (!db) {
@@ -224,7 +302,7 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!user || otpRequired) {
+    if (!user || otpRequired || isApprovalRestricted) {
       setPracticeSolvedIds(new Set());
       return;
     }
@@ -253,7 +331,7 @@ const App: React.FC = () => {
     );
 
     return unsubscribe;
-  }, [user?.id, otpRequired]);
+  }, [user?.id, otpRequired, isApprovalRestricted]);
 
   useEffect(() => {
     if (!db) {
@@ -332,7 +410,7 @@ const App: React.FC = () => {
       return;
     }
 
-    if (!user || otpRequired || !dailyEntry || !dailyRiddle) {
+    if (!user || otpRequired || isApprovalRestricted || !dailyEntry || !dailyRiddle) {
       return;
     }
 
@@ -378,7 +456,7 @@ const App: React.FC = () => {
     );
 
     return unsubscribe;
-  }, [user?.id, dailyEntry, dailyRiddle, otpRequired]);
+  }, [user?.id, dailyEntry, dailyRiddle, otpRequired, isApprovalRestricted]);
 
   useEffect(() => {
     practiceHintCacheRef.current = { hints: [], roasts: [], index: 0 };
@@ -453,14 +531,14 @@ const App: React.FC = () => {
   );
 
   useEffect(() => {
-    if (playMode === 'practice' && !practiceRiddle && !isPracticeLoading && !otpRequired) {
+    if (playMode === 'practice' && !practiceRiddle && !isPracticeLoading && !otpRequired && !isApprovalRestricted) {
       void loadPracticeRiddle();
     }
-  }, [playMode, practiceRiddle, loadPracticeRiddle, isPracticeLoading, otpRequired]);
+  }, [playMode, practiceRiddle, loadPracticeRiddle, isPracticeLoading, otpRequired, isApprovalRestricted]);
 
   const rewardUser = useCallback(
     async (pointsDelta: number, streakDelta: number) => {
-      if (!user) return;
+      if (!user || isApprovalRestricted) return;
 
       try {
         const firestore = requireDb();
@@ -481,7 +559,7 @@ const App: React.FC = () => {
         console.error('Failed to update user stats:', error);
       }
     },
-    [user, requireDb]
+    [user, requireDb, isApprovalRestricted]
   );
 
   const resetUserStreak = useCallback(async () => {
@@ -595,7 +673,7 @@ const App: React.FC = () => {
 
   const recordPracticeSolve = useCallback(
     async (riddle: Riddle) => {
-      if (!user) {
+      if (!user || isApprovalRestricted) {
         return;
       }
 
@@ -617,7 +695,59 @@ const App: React.FC = () => {
         console.error('Failed to record practice solve:', error);
       }
     },
-    [user, requireDb],
+    [user, requireDb, isApprovalRestricted],
+  );
+
+  const handleApproveUserAccount = useCallback(
+    async (targetUserId: string) => {
+      setUserApprovalError(null);
+      setResolvingUserId(targetUserId);
+      try {
+        const firestore = requireDb();
+        const userRef = doc(firestore, 'users', targetUserId);
+        await updateDoc(userRef, {
+          approvalStatus: 'approved',
+          approvalUpdatedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          approvalDenialReason: null,
+          approvalDeniedAt: null,
+        });
+      } catch (error) {
+        console.error('Failed to approve user account:', error);
+        setUserApprovalError(
+          error instanceof Error ? error.message : 'Failed to approve this account. Please try again.',
+        );
+      } finally {
+        setResolvingUserId(null);
+      }
+    },
+    [requireDb],
+  );
+
+  const handleDenyUserAccount = useCallback(
+    async (targetUserId: string, reason?: string) => {
+      setUserApprovalError(null);
+      setResolvingUserId(targetUserId);
+      try {
+        const firestore = requireDb();
+        const userRef = doc(firestore, 'users', targetUserId);
+        await updateDoc(userRef, {
+          approvalStatus: 'denied',
+          approvalUpdatedAt: serverTimestamp(),
+          approvalDeniedAt: serverTimestamp(),
+          approvalDenialReason: reason ?? null,
+          updatedAt: serverTimestamp(),
+        });
+      } catch (error) {
+        console.error('Failed to deny user account:', error);
+        setUserApprovalError(
+          error instanceof Error ? error.message : 'Failed to deny this account. Please try again.',
+        );
+      } finally {
+        setResolvingUserId(null);
+      }
+    },
+    [requireDb],
   );
 
   const handlePracticeCorrect = useCallback(async () => {
@@ -801,6 +931,20 @@ const App: React.FC = () => {
     [isAdmin, user, requireDb]
   );
 
+  const handleUnsetDailyRiddle = useCallback(async () => {
+    if (!user || !isAdmin) {
+      throw new Error('Only admins can unset the daily riddle.');
+    }
+
+    try {
+      const firestore = requireDb();
+      await deleteDoc(doc(firestore, 'dailyRiddle', 'current'));
+    } catch (err) {
+      console.error('Failed to unset daily riddle:', err);
+      throw err instanceof Error ? err : new Error('Failed to unset daily riddle.');
+    }
+  }, [isAdmin, user, requireDb]);
+
   const handleAccountDelete = useCallback(
     async ({ password }: { password?: string }) => {
       setAccountDeleteError(null);
@@ -962,14 +1106,24 @@ const App: React.FC = () => {
           );
         }
         return (
-          <AdminPanel
-            submissions={submissions}
-            onApprove={handleApproveRiddle}
-            onUpdate={handleUpdateRiddle}
-            onDelete={handleDeleteRiddle}
-            onSetDaily={handleSetDailyRiddle}
-            currentDaily={dailyEntry}
-          />
+          <div className="space-y-6">
+            <UserApprovalQueue
+              users={pendingUsers}
+              onApprove={handleApproveUserAccount}
+              onDeny={handleDenyUserAccount}
+              resolvingUserId={resolvingUserId}
+              error={userApprovalError}
+            />
+            <AdminPanel
+              submissions={submissions}
+              onApprove={handleApproveRiddle}
+              onUpdate={handleUpdateRiddle}
+              onDelete={handleDeleteRiddle}
+              onSetDaily={handleSetDailyRiddle}
+              onUnsetDaily={handleUnsetDailyRiddle}
+              currentDaily={dailyEntry}
+            />
+          </div>
         );
       default:
         return null;
@@ -991,6 +1145,29 @@ const App: React.FC = () => {
 
   if (!user || otpRequired) {
     return <AuthScreen />;
+  }
+
+  if (isDeniedAccess) {
+    return (
+      <PendingApprovalNotice
+        name={user.name}
+        email={accountEmail}
+        status="denied"
+        denialReason={user.approvalDenialReason}
+        onSignOut={signOutUser}
+      />
+    );
+  }
+
+  if (isPendingApproval) {
+    return (
+      <PendingApprovalNotice
+        name={user.name}
+        email={accountEmail}
+        status="pending"
+        onSignOut={signOutUser}
+      />
+    );
   }
 
   return (

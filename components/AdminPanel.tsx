@@ -9,14 +9,16 @@ interface AdminPanelProps {
   onUpdate: (id: string, updates: Partial<Submission>) => Promise<void> | void;
   onDelete: (id: string) => Promise<void> | void;
   onSetDaily: (submission: Submission) => Promise<void> | void;
+  onUnsetDaily: () => Promise<void> | void;
   currentDaily?: DailyRiddleEntry | null;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ submissions, onApprove, onUpdate, onDelete, onSetDaily, currentDaily }) => {
+const AdminPanel: React.FC<AdminPanelProps> = ({ submissions, onApprove, onUpdate, onDelete, onSetDaily, onUnsetDaily, currentDaily }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editFormData, setEditFormData] = useState<Partial<Submission>>({});
   const [pendingActionId, setPendingActionId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [clearingDaily, setClearingDaily] = useState(false);
 
   const pendingSubmissions = useMemo(() => submissions.filter(s => s.status === 'pending'), [submissions]);
   const approvedSubmissions = useMemo(() => submissions.filter(s => s.status === 'approved'), [submissions]);
@@ -65,6 +67,18 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ submissions, onApprove, onUpdat
       setActionError(error instanceof Error ? error.message : 'Failed to set daily riddle.');
     } finally {
       setPendingActionId(null);
+    }
+  };
+
+  const handleUnsetDaily = async () => {
+    setClearingDaily(true);
+    setActionError(null);
+    try {
+      await onUnsetDaily();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Failed to unset the daily riddle.');
+    } finally {
+      setClearingDaily(false);
     }
   };
 
@@ -209,6 +223,14 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ submissions, onApprove, onUpdat
             <span className="text-slate-400">Date: {currentDaily.date}</span>
             {currentDaily.setByName && <span className="text-slate-400">Set by: {currentDaily.setByName}</span>}
           </div>
+          <button
+            type="button"
+            onClick={handleUnsetDaily}
+            disabled={clearingDaily}
+            className="mt-4 rounded-lg border border-white/30 px-4 py-2 text-sm font-semibold text-white/90 hover:bg-white/10 transition disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {clearingDaily ? 'Clearing…' : 'Unset daily riddle'}
+          </button>
         </div>
       ) : (
         <div className="mb-6 rounded-xl border border-dashed border-white/20 bg-white/5 p-4 text-sm text-slate-300">

@@ -26,7 +26,7 @@ import {
 import { FirebaseError } from 'firebase/app';
 import { auth, db } from '../services/firebaseClient';
 import { deleteUserData } from '../services/accountDeletion';
-import { User } from '../types';
+import { User, UserApprovalStatus } from '../types';
 import { createOtpChallenge, verifyOtpCode, OtpError } from '../services/otpService';
 
 type AuthRole = 'player' | 'admin';
@@ -61,8 +61,37 @@ const ADMIN_EMAILS = (import.meta.env.VITE_FIREBASE_ADMIN_EMAILS || '')
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const OTP_CODE_LENGTH = 6;
 const OTP_VERIFIED_PREFIX = 'riddlerealm:otpVerified:';
+const OTP_FEATURE_ENABLED = String(import.meta.env.VITE_ENABLE_OTP ?? 'false').toLowerCase() === 'true';
+const DEFAULT_APPROVAL_STATUS: UserApprovalStatus = 'approved';
+const PENDING_APPROVAL_STATUS: UserApprovalStatus = 'pending';
 
 const getOtpStorageKey = (userId: string) => `${OTP_VERIFIED_PREFIX}${userId}`;
+
+const normalizeTimestamp = (input: unknown): string | undefined => {
+  if (!input) {
+    return undefined;
+  }
+
+  if (typeof input === 'string') {
+    return input;
+  }
+
+  if (
+    typeof input === 'object' &&
+    input !== null &&
+    'toDate' in input &&
+    typeof (input as { toDate?: () => Date }).toDate === 'function'
+  ) {
+    try {
+      return ((input as { toDate: () => Date }).toDate()).toISOString();
+    } catch (error) {
+      console.warn('Failed to normalize timestamp value.', error);
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
 
 const readStoredOtpVerification = (userId: string): string | null => {
   if (typeof window === 'undefined') {
@@ -107,6 +136,7 @@ const resolveRole = (email: string | null | undefined): AuthRole => {
 
 const sanitizeUserDoc = (docData: DocumentData, fallback: Partial<User>): User => {
   const role = (docData.role || fallback.role || 'player') as AuthRole;
+  const approvalStatus = (docData.approvalStatus || fallback.approvalStatus || DEFAULT_APPROVAL_STATUS) as UserApprovalStatus;
   const safeUser: User = {
     id: docData.id || fallback.id || '',
     name: docData.name || fallback.name || 'Explorer',
@@ -116,6 +146,9 @@ const sanitizeUserDoc = (docData: DocumentData, fallback: Partial<User>): User =
     badge: docData.badge || fallback.badge || 'New Challenger',
     role,
     avatarUrl: docData.avatarUrl || fallback.avatarUrl,
+    approvalStatus,
+    approvalRequestedAt: normalizeTimestamp(docData.approvalRequestedAt) ?? fallback.approvalRequestedAt,
+    approvalUpdatedAt: normalizeTimestamp(docData.approvalUpdatedAt) ?? fallback.approvalUpdatedAt,
   };
   return safeUser;
 };
@@ -129,6 +162,8 @@ const ensureUserDocument = async (firebaseUser: FirebaseUser, overrides?: Partia
   const snapshot = await getDoc(userRef);
   const displayName = overrides?.name || firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'Explorer';
   const derivedRole = overrides?.role || resolveRole(firebaseUser.email);
+  const derivedApprovalStatus =
+    overrides?.approvalStatus || (derivedRole === 'admin' ? DEFAULT_APPROVAL_STATUS : PENDING_APPROVAL_STATUS);
 
   if (!snapshot.exists()) {
     const baseDoc: Record<string, unknown> = {
@@ -139,6 +174,9 @@ const ensureUserDocument = async (firebaseUser: FirebaseUser, overrides?: Partia
       streak: overrides?.streak ?? 0,
       badge: overrides?.badge ?? 'New Challenger',
       role: derivedRole,
+      approvalStatus: derivedApprovalStatus,
+      approvalRequestedAt: serverTimestamp(),
+      approvalUpdatedAt: derivedApprovalStatus === DEFAULT_APPROVAL_STATUS ? serverTimestamp() : null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -157,6 +195,18 @@ const ensureUserDocument = async (firebaseUser: FirebaseUser, overrides?: Partia
 
   if (!existingData.role && derivedRole) {
     updates.role = derivedRole;
+    requiresUpdate = true;
+  }
+
+  const existingApprovalStatus = existingData.approvalStatus as UserApprovalStatus | undefined;
+
+  if (overrides?.approvalStatus && existingApprovalStatus !== overrides.approvalStatus) {
+    updates.approvalStatus = overrides.approvalStatus;
+    updates.approvalUpdatedAt = serverTimestamp();
+    requiresUpdate = true;
+  } else if (!existingApprovalStatus) {
+    updates.approvalStatus = DEFAULT_APPROVAL_STATUS;
+    updates.approvalUpdatedAt = serverTimestamp();
     requiresUpdate = true;
   }
 
@@ -186,6 +236,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const firebaseUnavailable = !auth || !db;
 
   const prepareOtpForUser = useCallback(async (user: FirebaseUser) => {
+    if (!OTP_FEATURE_ENABLED) {
+      setOtpRequired(false);
+      setOtpDeliveryPending(false);
+      setOtpError(null);
+      return;
+    }
+
     if (!user.email) {
       setOtpError('Cannot send a verification code because no email is associated with this account.');
       setOtpRequired(false);
@@ -227,12 +284,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const otpResendCooldownMs = useMemo(
-    () => Math.max(0, otpResendAvailableAt - Date.now()),
+    () => (OTP_FEATURE_ENABLED ? Math.max(0, otpResendAvailableAt - Date.now()) : 0),
     [otpResendAvailableAt, otpTimerTick],
   );
 
   useEffect(() => {
-    if (!otpRequired || typeof window === 'undefined') {
+    if (!OTP_FEATURE_ENABLED || !otpRequired || typeof window === 'undefined') {
       return;
     }
 
@@ -289,20 +346,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.error('Failed to ensure user document exists:', error);
       }
 
-      const storedVerification = readStoredOtpVerification(currentUser.uid);
+      if (OTP_FEATURE_ENABLED) {
+        const storedVerification = readStoredOtpVerification(currentUser.uid);
 
-      if (storedVerification) {
+        if (storedVerification) {
+          setOtpRequired(false);
+          setOtpDeliveryPending(false);
+          setOtpError(null);
+          setOtpResendAvailableAt(0);
+          otpInitializedForRef.current = currentUser.uid;
+        } else if (otpInitializedForRef.current !== currentUser.uid) {
+          try {
+            await prepareOtpForUser(currentUser);
+          } catch (error) {
+            console.error('Failed to initiate OTP verification:', error);
+          }
+        }
+      } else {
         setOtpRequired(false);
         setOtpDeliveryPending(false);
         setOtpError(null);
         setOtpResendAvailableAt(0);
         otpInitializedForRef.current = currentUser.uid;
-      } else if (otpInitializedForRef.current !== currentUser.uid) {
-        try {
-          await prepareOtpForUser(currentUser);
-        } catch (error) {
-          console.error('Failed to initiate OTP verification:', error);
-        }
       }
 
       if (unsubscribeProfile) {
@@ -322,6 +387,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               name: currentUser.displayName ?? undefined,
               avatarUrl: currentUser.photoURL ?? undefined,
               role: derivedRole,
+              approvalStatus: DEFAULT_APPROVAL_STATUS,
             });
             setProfile(sanitized);
           }
@@ -432,6 +498,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const verifyOtp = useCallback(
     async (code: string) => {
+      if (!OTP_FEATURE_ENABLED) {
+        setOtpRequired(false);
+        setOtpError(null);
+        return;
+      }
+
       if (!firebaseUser) {
         setOtpError('You must be signed in to verify a code.');
         return;
@@ -472,6 +544,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   );
 
   const resendOtp = useCallback(async () => {
+    if (!OTP_FEATURE_ENABLED) {
+      setOtpRequired(false);
+      setOtpError(null);
+      return;
+    }
+
     if (!firebaseUser) {
       setOtpError('Sign in again to request a new code.');
       return;

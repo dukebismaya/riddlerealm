@@ -357,6 +357,12 @@ const AuthScreen: React.FC = () => {
             </form>
           )}
 
+          {!otpRequired && mode === 'signup' && (
+            <p className="mt-4 text-center text-xs text-slate-400">
+              Heads up: new adventurers stay in a pending state until an admin approves them. We&apos;ll email you as soon as you&apos;re cleared.
+            </p>
+          )}
+
           {!otpRequired && (
             <>
               <div className="my-6 flex items-center gap-4">

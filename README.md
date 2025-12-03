@@ -18,8 +18,19 @@ RiddleRealm is a React + Vite experience where players tackle daily riddles, unl
 ## Quick Start
 
 1. Install dependencies: `npm install`
-2. Copy `.env.example` to `.env.local` and fill in your API keys, Firebase config, and EmailJS credentials for OTP delivery
+2. Copy `.env.example` to `.env.local` and fill in your API keys, Firebase config, and EmailJS credentials (only needed if you plan to turn OTP back on via `VITE_ENABLE_OTP=true`). Make sure `VITE_FIREBASE_ADMIN_EMAILS` includes every email that should bypass approval.
 3. Launch the dev server: `npm run dev`
+
+### Optional: seed Firestore with demo data
+
+1. Download a Firebase service account key for the target project and note the path, e.g. `./service-account.json`.
+2. Run `FIREBASE_SERVICE_ACCOUNT=./service-account.json npm run seed:firestore` (you can also inline the JSON string into the env var).
+3. The script provisions:
+   - Three user profiles (approved admin, approved player, pending player)
+   - A sample `dailyRiddle/current` document
+   - Two example submissions (one approved, one pending)
+
+You can re-run the seed command safely; it merges documents so local tweaks stay intact.
 
 ## Core Features
 
@@ -27,7 +38,16 @@ RiddleRealm is a React + Vite experience where players tackle daily riddles, unl
 - Progressive hint ladder with playful roasts
 - Firebase authentication, profile tracking, and leaderboard scoring
 - Admin panel for managing riddles and reviewing player submissions
-- OTP-protected login with email-delivered confirmation codes
+- Optional OTP-protected login with email-delivered confirmation codes (enable via `VITE_ENABLE_OTP=true`)
+- Admin-gated player onboarding: new accounts require approval in the dashboard before they can play
+
+## Account Approval Flow
+
+When someone signs up, their profile starts in a **pending** state. Admin emails listed in `VITE_FIREBASE_ADMIN_EMAILS` skip this gate automatically.
+
+- Pending players see a holding screen and cannot access gameplay, submissions, or data.
+- Admins get a queue inside the Admin tab that shows who is waiting; approving a player flips them to **approved** instantly.
+- Repeated sign-up attempts do not create duplicate requests—the original record stays pending until approved.
 
 ## Environment Variables
 
@@ -46,4 +66,5 @@ VITE_FIREBASE_ADMIN_EMAILS=
 VITE_EMAILJS_SERVICE_ID=
 VITE_EMAILJS_TEMPLATE_ID=
 VITE_EMAILJS_PUBLIC_KEY=
+VITE_ENABLE_OTP=
 ```

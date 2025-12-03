@@ -1,42 +1,72 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import { Difficulty, Riddle } from '../types';
 import { OFFLINE_RIDDLES } from "../riddles";
 
-const apiKeyFromVite = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
-const apiKeyFromProcess =
-  typeof process !== 'undefined'
-    ? process.env?.VITE_GEMINI_API_KEY || process.env?.GEMINI_API_KEY || process.env?.API_KEY
-    : undefined;
+const GEMINI_ENDPOINT = import.meta.env.VITE_GEMINI_PROXY_ENDPOINT || '/api/gemini';
 
-const API_KEY = (apiKeyFromVite || apiKeyFromProcess || '').trim();
-let ai: GoogleGenAI | null = null;
+type RemoteState = 'unknown' | 'online' | 'offline';
+let remoteState: RemoteState = 'unknown';
+let lastFailureTs = 0;
 
-if (API_KEY) {
-  try {
-    ai = new GoogleGenAI({ apiKey: API_KEY });
-  } catch (error) {
-    console.error("Failed to initialize GoogleGenAI, even with an API key.", error);
+const markRemoteState = (state: RemoteState) => {
+  remoteState = state;
+  if (state === 'offline') {
+    lastFailureTs = Date.now();
   }
-} else {
-  console.warn("Gemini API key not found. Running in offline mode with local riddles.");
+};
+
+const shouldAttemptRemote = () => {
+  if (remoteState !== 'offline') {
+    return true;
+  }
+  return Date.now() - lastFailureTs > 60_000; // retry after 60 seconds
+};
+
+const callGeminiEndpoint = async <T>(payload: Record<string, unknown>): Promise<T> => {
+  if (!shouldAttemptRemote()) {
+    throw new Error('Gemini endpoint unavailable.');
+  }
+
+  try {
+    const response = await fetch(GEMINI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      if (response.status >= 500) {
+        markRemoteState('offline');
+      }
+      const detail = await response.text();
+      throw new Error(detail || 'Gemini endpoint responded with an error.');
+    }
+
+    markRemoteState('online');
+    return (await response.json()) as T;
+  } catch (error) {
+    markRemoteState('offline');
+    throw error;
+  }
+};
+
+const probeGeminiEndpoint = async () => {
+  try {
+    const response = await fetch(GEMINI_ENDPOINT, { method: 'GET' });
+    if (response.ok) {
+      markRemoteState('online');
+    } else {
+      markRemoteState('offline');
+    }
+  } catch {
+    markRemoteState('offline');
+  }
+};
+
+if (typeof window !== 'undefined') {
+  void probeGeminiEndpoint();
 }
 
-export const isApiAvailable = () => !!ai;
-
-const riddleSchema = {
-  type: Type.OBJECT,
-  properties: {
-    riddle: {
-      type: Type.STRING,
-      description: "The text of the riddle."
-    },
-    answer: {
-      type: Type.STRING,
-      description: "The answer to the riddle, typically one or two words."
-    },
-  },
-  required: ['riddle', 'answer'],
-};
+export const isApiAvailable = () => remoteState !== 'offline';
 
 const buildFallbackHintSet = (riddleText: string, answer: string) => {
   const sanitizedAnswer = answer.trim();
@@ -81,28 +111,24 @@ const getOfflineRiddle = (difficulty: Difficulty, additionalRiddles: Riddle[] = 
 
 
 export const fetchDailyRiddle = async (difficulty: Difficulty, additionalRiddles: Riddle[] = []): Promise<Riddle> => {
-  if (!isApiAvailable()) {
-    return getOfflineRiddle(difficulty, additionalRiddles);
-  }
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Generate a unique and clever riddle with a one or two-word answer. The difficulty should be ${difficulty}.`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: riddleSchema,
-      },
+    const result = await callGeminiEndpoint<{ riddle: { id: string; text: string; answer: string; difficulty: Difficulty } }>({
+      mode: 'daily',
+      difficulty,
     });
 
-    const parsed = JSON.parse(response.text);
-    return {
-      id: new Date().toISOString().split('T')[0], // Daily ID
-      text: parsed.riddle,
-      answer: parsed.answer,
-      difficulty,
-    };
+    if (result?.riddle?.text && result?.riddle?.answer) {
+      return {
+        id: result.riddle.id ?? new Date().toISOString().split('T')[0],
+        text: result.riddle.text,
+        answer: result.riddle.answer,
+        difficulty: result.riddle.difficulty ?? difficulty,
+      };
+    }
+
+    throw new Error('Gemini endpoint returned an invalid payload.');
   } catch (error) {
-    console.error("Error fetching daily riddle from Gemini, falling back to offline riddle:", error);
+    console.error('Error fetching daily riddle from Gemini endpoint, falling back to offline riddle:', error);
     return getOfflineRiddle(difficulty, additionalRiddles);
   }
 };
@@ -112,48 +138,31 @@ export const generateHintSet = async (
   answer: string,
   desiredCount = 3,
 ): Promise<{ hints: string[]; roasts: string[] }> => {
-  if (!isApiAvailable()) {
-    return buildFallbackHintSet(riddleText, answer);
-  }
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: `You are a helpful riddle assistant. For the riddle below, produce EXACTLY ${desiredCount} progressively revealing hints and a playful roast for each hint. Avoid mentioning the answer directly. Return JSON with two arrays: "hints" (array of strings) and "roasts" (array of strings of the same length).
-
-Riddle: "${riddleText}"
-Answer: "${answer}"`,
-            },
-          ],
-        },
-      ],
-      config: {
-        responseMimeType: "application/json",
-      },
+    const result = await callGeminiEndpoint<{ hints: string[]; roasts: string[] }>({
+      mode: 'hint',
+      riddleText,
+      answer,
+      desiredCount,
     });
 
-    const parsed = JSON.parse(response.text ?? '{}');
-    const rawHints = Array.isArray(parsed.hints) ? parsed.hints : [];
-    const rawRoasts = Array.isArray(parsed.roasts) ? parsed.roasts : [];
+    const hints = Array.isArray(result?.hints) ? result.hints.map((entry) => String(entry)) : [];
+    const roasts = Array.isArray(result?.roasts) ? result.roasts.map((entry) => String(entry)) : [];
 
-    const limitedHints = rawHints.slice(0, desiredCount).map((entry: unknown) => String(entry));
-    const limitedRoasts = rawRoasts.slice(0, desiredCount).map((entry: unknown) => String(entry));
-
-    if (limitedHints.length === 0) {
+    if (hints.length === 0) {
       return buildFallbackHintSet(riddleText, answer);
     }
 
-    while (limitedRoasts.length < limitedHints.length) {
-      limitedRoasts.push('Need another hint? Keep going, detective.');
+    while (roasts.length < hints.length) {
+      roasts.push('Need another hint? Keep going, detective.');
     }
 
-    return { hints: limitedHints, roasts: limitedRoasts };
+    return {
+      hints: hints.slice(0, desiredCount),
+      roasts: roasts.slice(0, desiredCount),
+    };
   } catch (error) {
-    console.error("Error fetching hint and roast:", error);
+    console.error('Error fetching hint set from Gemini endpoint:', error);
     return buildFallbackHintSet(riddleText, answer);
   }
 };

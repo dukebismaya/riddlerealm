@@ -11,19 +11,17 @@ type Diagnostic = {
 export const getDiagnostics = (): Diagnostic[] => {
   const diagnostics: Diagnostic[] = [];
 
-  // Gemini / AI key
-  const apiKeyFromVite = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
-  const apiKeyFromProcess = typeof process !== 'undefined'
-    ? process.env?.VITE_GEMINI_API_KEY || process.env?.GEMINI_API_KEY || process.env?.API_KEY
-    : undefined;
-  const computedKey = (apiKeyFromVite || apiKeyFromProcess || '').trim();
-
+  // Gemini proxy / AI backend
+  const proxyEndpoint = (import.meta.env.VITE_GEMINI_PROXY_ENDPOINT || '/api/gemini').trim();
   if (isApiAvailable()) {
-    diagnostics.push({ key: 'gemini', ok: true, message: 'Gemini AI client initialized.' });
-  } else if (computedKey) {
-    diagnostics.push({ key: 'gemini', ok: false, message: 'Gemini client failed to initialize with provided key.', detail: 'Check the key value and network access.' });
+    diagnostics.push({ key: 'gemini', ok: true, message: 'Gemini proxy reachable.', detail: `Endpoint: ${proxyEndpoint}` });
   } else {
-    diagnostics.push({ key: 'gemini', ok: false, message: 'Gemini API key missing.', detail: 'Set VITE_GEMINI_API_KEY or GEMINI_API_KEY or API_KEY.' });
+    diagnostics.push({
+      key: 'gemini',
+      ok: false,
+      message: 'Gemini proxy unavailable.',
+      detail: 'Ensure /api/gemini is deployed and the server-side GEMINI_API_KEY secret is set. Configure VITE_GEMINI_PROXY_ENDPOINT if you host the proxy elsewhere.',
+    });
   }
 
   // Email service (EmailJS)
@@ -65,12 +63,12 @@ export const getDiagnostics = (): Diagnostic[] => {
 const fetchWithTimeout = async (
   url: string,
   timeoutMs = 3000,
+  init?: RequestInit,
 ): Promise<{ ok: boolean; status?: number; reachable: boolean; error?: string }> => {
   try {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
-    // Use HEAD when possible, fallback to GET if not allowed
-    const res = await fetch(url, { method: 'HEAD', mode: 'cors', signal: controller.signal });
+    const res = await fetch(url, { method: 'HEAD', mode: 'cors', ...(init || {}), signal: controller.signal });
     clearTimeout(id);
     return { ok: res.ok, status: res.status, reachable: true };
   } catch (err: any) {
@@ -109,31 +107,25 @@ export const getDiagnosticsAsync = async (): Promise<Diagnostic[]> => {
     }
   }
 
-  // Ping Gemini/Generative API domain if key present
+  // Ping Gemini proxy endpoint (relative or absolute)
   const gemDiag = results.find((r) => r.key === 'gemini');
   if (gemDiag) {
-    const apiKeyFromVite = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.GEMINI_API_KEY;
-    const apiKeyFromProcess = typeof process !== 'undefined'
-      ? process.env?.VITE_GEMINI_API_KEY || process.env?.GEMINI_API_KEY || process.env?.API_KEY
-      : undefined;
-    const computedKey = (apiKeyFromVite || apiKeyFromProcess || '').trim();
-    if (computedKey) {
-      try {
-        const ping = await fetchWithTimeout('https://generativelanguage.googleapis.com', 2500);
-        if (ping.reachable !== false) {
-          gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + 'Network: reachable.';
-          gemDiag.ok = gemDiag.ok !== false ? true : false;
-        } else {
-          gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Network: unreachable (${ping.error}).`;
-          gemDiag.ok = false;
-        }
-        if (ping.reachable && !ping.ok) {
-          gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Service responded with status ${ping.status}.`;
-        }
-      } catch (e) {
-        gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Network check failed.`;
+    const endpoint = (import.meta.env.VITE_GEMINI_PROXY_ENDPOINT || '/api/gemini').trim();
+    try {
+      const ping = await fetchWithTimeout(endpoint, 2500, { method: 'GET', mode: 'cors' });
+      if (ping.reachable !== false) {
+        gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + 'Proxy reachable.';
+        gemDiag.ok = ping.ok && gemDiag.ok !== false;
+      } else {
+        gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Proxy unreachable (${ping.error}).`;
         gemDiag.ok = false;
       }
+      if (ping.reachable && !ping.ok) {
+        gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + `Proxy responded with status ${ping.status}.`;
+      }
+    } catch (e) {
+      gemDiag.detail = (gemDiag.detail ? gemDiag.detail + ' ' : '') + 'Proxy check failed.';
+      gemDiag.ok = false;
     }
   }
 

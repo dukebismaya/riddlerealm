@@ -318,7 +318,8 @@ const ApiUnavailable: React.FC = () => {
         </div>
 
         <p style={{ color: "#ddd", marginBottom: 6 }}>
-          If you're the site owner, ensure environment variables are set (for example <code>VITE_GEMINI_API_KEY</code>).
+          If you're the site owner, double-check that the server-side <code>GEMINI_API_KEY</code> secret is set and that
+          any custom <code>VITE_GEMINI_PROXY_ENDPOINT</code> value points to a live proxy.
         </p>
         <p style={{ color: "#ffdcdc" }}>
           For help, contact: <a className="contact" href="mailto:bismayajyotidalei@gmail.com">bismayajyotidalei@gmail.com</a>

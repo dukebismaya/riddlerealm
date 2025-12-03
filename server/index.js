@@ -19,7 +19,7 @@ const fetchWithTimeout = async (url, timeoutMs = 3000) => {
 
 const checkEnv = () => {
   const items = {};
-  items.VITE_GEMINI_API_KEY = !!(process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY || process.env.API_KEY);
+  items.GEMINI_API_KEY = !!(process.env.GEMINI_API_KEY || process.env.API_KEY);
   items.VITE_EMAILJS_SERVICE_ID = !!process.env.VITE_EMAILJS_SERVICE_ID;
   items.VITE_EMAILJS_TEMPLATE_ID = !!process.env.VITE_EMAILJS_TEMPLATE_ID;
   items.VITE_EMAILJS_PUBLIC_KEY = !!process.env.VITE_EMAILJS_PUBLIC_KEY;
@@ -48,7 +48,7 @@ app.get('/health', async (req, res) => {
   // Gemini / generative language
   checks.push((async () => {
     const ping = await fetchWithTimeout('https://generativelanguage.googleapis.com', 3000);
-    return { key: 'gemini', network: ping, configured: env.VITE_GEMINI_API_KEY };
+    return { key: 'gemini', network: ping, configured: env.GEMINI_API_KEY };
   })());
 
   const results = await Promise.all(checks);

@@ -18,7 +18,7 @@ RiddleRealm is a React + Vite experience where players tackle daily riddles, unl
 ## Quick Start
 
 1. Install dependencies: `npm install`
-2. Copy `.env.example` to `.env.local` and fill in your API keys, Firebase config, and EmailJS credentials (only needed if you plan to turn OTP back on via `VITE_ENABLE_OTP=true`). Make sure `VITE_FIREBASE_ADMIN_EMAILS` includes every email that should bypass approval.
+2. Copy `.env.example` to `.env.local` and fill in your Firebase + EmailJS config (OTP creds only matter if you re-enable OTP via `VITE_ENABLE_OTP=true`). Set `GEMINI_API_KEY` in your server environment (e.g., Vercel project settings or a local `.env` read by `vercel dev`/`server/index.js`) so only backend code can see it. If you host the Gemini proxy elsewhere, point `VITE_GEMINI_PROXY_ENDPOINT` at that URL.
 3. Launch the dev server: `npm run dev`
 
 ### Optional: seed Firestore with demo data
@@ -51,9 +51,15 @@ When someone signs up, their profile starts in a **pending** state. Admin emails
 
 ## Environment Variables
 
-```
-VITE_GEMINI_API_KEY=
+**Server-only (API routes, `/api/gemini`, `server/index.js`)**
 
+```
+GEMINI_API_KEY=
+```
+
+**Client-side (Vite)**
+
+```
 VITE_FIREBASE_API_KEY=
 VITE_FIREBASE_AUTH_DOMAIN=
 VITE_FIREBASE_PROJECT_ID=
@@ -67,4 +73,7 @@ VITE_EMAILJS_SERVICE_ID=
 VITE_EMAILJS_TEMPLATE_ID=
 VITE_EMAILJS_PUBLIC_KEY=
 VITE_ENABLE_OTP=
+
+# optional override, defaults to /api/gemini
+VITE_GEMINI_PROXY_ENDPOINT=
 ```
